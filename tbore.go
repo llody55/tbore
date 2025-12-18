@@ -19,7 +19,7 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-const version = "0.2.2"
+const version = "0.2.3"
 
 // ====================== 通用工具 ======================
 
