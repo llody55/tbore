@@ -21,19 +21,17 @@ jobs:
           - os: linux
             arch: arm64
             target: linux-arm64
-
-          # Windows
-          - os: windows
-            arch: amd64
-            target: windows-amd64
-
-          # macOS (darwin)
+          # macOS
           - os: darwin
             arch: amd64
             target: darwin-amd64
           - os: darwin
             arch: arm64
             target: darwin-arm64
+          # Windows
+          - os: windows
+            arch: amd64
+            target: windows-amd64
 
     steps:
       - name: Checkout code
@@ -44,32 +42,56 @@ jobs:
         with:
           go-version: '1.23'
       
-      - name: Set Go proxy
+      - name: Set Go proxy (optional, for China users)
         run: |
           go env -w GOPROXY=https://goproxy.cn,direct
           go env -w GOSUMDB=sum.golang.google.cn
 
-      - name: Build and checksum
+      - name: Build binary
         env:
           GOOS: ${{ matrix.os }}
           GOARCH: ${{ matrix.arch }}
         run: |
-          BINARY="tbore"
-          [ "$GOOS" = "windows" ] && BINARY="$BINARY.exe"
+          # 设置二进制文件名
+          BINARY_NAME="tbore"
+          OUTPUT_NAME="tbore-${{ matrix.target }}"
+          [ "$GOOS" = "windows" ] && BINARY_NAME="$BINARY_NAME.exe" && OUTPUT_NAME="$OUTPUT_NAME.exe"
+          
+          # 构建
+          CGO_ENABLED=0 go build \
+            -ldflags="-s -w -extldflags '-static'" \
+            -o "$OUTPUT_NAME" \
+            tbore.go
+          
+          # 计算校验和
+          if [ "$GOOS" = "windows" ]; then
+            # Windows 使用 PowerShell 计算 SHA256
+            powershell -Command "Get-FileHash '$OUTPUT_NAME' -Algorithm SHA256 | Select-Object -ExpandProperty Hash | Out-File '$OUTPUT_NAME.sha256' -Encoding ASCII"
+          else
+            sha256sum "$OUTPUT_NAME" > "$OUTPUT_NAME.sha256"
+          fi
 
-          CGO_ENABLED=0 go build -ldflags="-s -w -extldflags '-static'" -o "$BINARY" tbore.go
-
-          FINAL_NAME="tbore-${{ matrix.target }}$([ "$GOOS" = "windows" ] && echo ".exe")"
-          mv "$BINARY" "$FINAL_NAME"
-
-          sha256sum "$FINAL_NAME" > "$FINAL_NAME.sha256"
-      - name: Generate checksums
+  release:
+    runs-on: ubuntu-latest
+    needs: build-and-release
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: tbore-*
+          path: ./dist/
+      
+      - name: Create checksums file
         run: |
-          sha256sum tbore-* >> checksums.txt
-
-      - name: Upload to Release
+          cd ./dist
+          find . -name "tbore-*" ! -name "*.sha256" -exec sha256sum {} \; > checksums.txt
+      
+      - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            tbore-*
-          fail_on_unmatched_files: false
+          files: ./dist/*
+          draft: false
+          prerelease: false
