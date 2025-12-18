@@ -9,27 +9,35 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  build-and-release:
     runs-on: ubuntu-latest
     strategy:
       matrix:
         include:
+          # Linux
           - os: linux
             arch: amd64
+            target: linux-amd64
           - os: linux
             arch: arm64
-          - os: linux
-            arch: arm
-            arm_version: 7
-          - os: darwin
-            arch: amd64
-          - os: darwin
-            arch: arm64
+            target: linux-arm64
+
+          # Windows
           - os: windows
             arch: amd64
+            target: windows-amd64
+
+          # macOS (darwin)
+          - os: darwin
+            arch: amd64
+            target: darwin-amd64
+          - os: darwin
+            arch: arm64
+            target: darwin-arm64
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -40,17 +48,23 @@ jobs:
         env:
           GOOS: ${{ matrix.os }}
           GOARCH: ${{ matrix.arch }}
-          GOARM: ${{ matrix.arm_version }}
         run: |
-          BINARY_NAME=tbore
-          if [ "$GOOS" = "windows" ]; then BINARY_NAME="$BINARY_NAME.exe"; fi
-          CGO_ENABLED=0 go build -ldflags "-s -w -extldflags '-static'" -o "$BINARY_NAME" .
+          BINARY="tbore"
+          if [ "$GOOS" = "windows" ]; then BINARY="$BINARY.exe"; fi
 
-      - name: Upload binaries to release
-        uses: svenstaro/upload-release-action@v2
+          CGO_ENABLED=0 go build -ldflags="-s -w -extldflags '-static'" -o "$BINARY" tbore.go
+
+          FINAL_NAME="tbore-${{ matrix.target }}"
+          if [ "$GOOS" = "windows" ]; then FINAL_NAME="$FINAL_NAME.exe"; fi
+
+          mv "$BINARY" "$FINAL_NAME"
+
+          sha256sum "$FINAL_NAME" > "$FINAL_NAME.sha256"
+
+      - name: Upload binaries to Release
+        uses: softprops/action-gh-release@v2
         with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: tbore*
-          tag: ${{ github.ref }}
-          overwrite: true
-          file_glob: true
+          files: |
+            tbore-*
+            *.sha256
+          fail_on_unmatched_files: false
