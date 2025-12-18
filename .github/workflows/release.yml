@@ -50,21 +50,21 @@ jobs:
           GOARCH: ${{ matrix.arch }}
         run: |
           BINARY="tbore"
-          if [ "$GOOS" = "windows" ]; then BINARY="$BINARY.exe"; fi
+          [ "$GOOS" = "windows" ] && BINARY="$BINARY.exe"
 
           CGO_ENABLED=0 go build -ldflags="-s -w -extldflags '-static'" -o "$BINARY" tbore.go
 
-          FINAL_NAME="tbore-${{ matrix.target }}"
-          if [ "$GOOS" = "windows" ]; then FINAL_NAME="$FINAL_NAME.exe"; fi
-
+          FINAL_NAME="tbore-${{ matrix.target }}$([ "$GOOS" = "windows" ] && echo ".exe")"
           mv "$BINARY" "$FINAL_NAME"
 
           sha256sum "$FINAL_NAME" > "$FINAL_NAME.sha256"
+      - name: Generate checksums
+        run: |
+          sha256sum tbore-* >> checksums.txt
 
-      - name: Upload binaries to Release
+      - name: Upload to Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             tbore-*
-            *.sha256
           fail_on_unmatched_files: false
