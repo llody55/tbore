@@ -9,29 +9,21 @@ permissions:
   contents: write
 
 jobs:
-  build-and-release:
+  build:
     runs-on: ubuntu-latest
     strategy:
       matrix:
         include:
-          # Linux
           - os: linux
             arch: amd64
-            target: linux-amd64
           - os: linux
             arch: arm64
-            target: linux-arm64
-          # macOS
           - os: darwin
             arch: amd64
-            target: darwin-amd64
           - os: darwin
             arch: arm64
-            target: darwin-arm64
-          # Windows
           - os: windows
             arch: amd64
-            target: windows-amd64
 
     steps:
       - name: Checkout code
@@ -40,58 +32,73 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
-      
-      - name: Set Go proxy (optional, for China users)
-        run: |
-          go env -w GOPROXY=https://goproxy.cn,direct
-          go env -w GOSUMDB=sum.golang.google.cn
+          go-version: '1.24'
 
       - name: Build binary
         env:
           GOOS: ${{ matrix.os }}
           GOARCH: ${{ matrix.arch }}
         run: |
-          # 设置二进制文件名
           BINARY_NAME="tbore"
-          OUTPUT_NAME="tbore-${{ matrix.target }}"
-          [ "$GOOS" = "windows" ] && BINARY_NAME="$BINARY_NAME.exe" && OUTPUT_NAME="$OUTPUT_NAME.exe"
+
+          if [ "$GOOS" = "windows" ]; then
+            BINARY_NAME="tbore.exe"
+          fi
           
-          # 构建
           CGO_ENABLED=0 go build \
             -ldflags="-s -w -extldflags '-static'" \
-            -o "$OUTPUT_NAME" \
+            -o "$BINARY_NAME" \
             tbore.go
-          
-          # 计算校验和
+
+          RELEASE_NAME="tbore-${{ matrix.os }}-${{ matrix.arch }}"
           if [ "$GOOS" = "windows" ]; then
-            # Windows 使用 PowerShell 计算 SHA256
-            powershell -Command "Get-FileHash '$OUTPUT_NAME' -Algorithm SHA256 | Select-Object -ExpandProperty Hash | Out-File '$OUTPUT_NAME.sha256' -Encoding ASCII"
+            mv "$BINARY_NAME" "${RELEASE_NAME}.exe"
+            sha256sum "${RELEASE_NAME}.exe" > "${RELEASE_NAME}.exe.sha256"
           else
-            sha256sum "$OUTPUT_NAME" > "$OUTPUT_NAME.sha256"
+            mv "$BINARY_NAME" "$RELEASE_NAME"
+            sha256sum "$RELEASE_NAME" > "${RELEASE_NAME}.sha256"
           fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: tbore-${{ matrix.os }}-${{ matrix.arch }}
+          path: tbore-*
 
   release:
     runs-on: ubuntu-latest
-    needs: build-and-release
+    needs: build
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
-      - name: Download artifacts
+
+      - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: tbore-*
-          path: ./dist/
-      
-      - name: Create checksums file
+          path: ./dist
+          merge-multiple: true
+
+      - name: Create combined checksums file
         run: |
           cd ./dist
-          find . -name "tbore-*" ! -name "*.sha256" -exec sha256sum {} \; > checksums.txt
-      
+          cat *.sha256 > checksums.txt
+          # rm *.sha256
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          files: ./dist/*
+          files: |
+            ./dist/tbore-*
+            ./dist/checksums.txt
+          body: |
+            ## tbore v${{ github.ref_name }}
+            基于 SSH 隧道的内网穿透工具。
+            
+            ### 更新日志
+            - 支持多路复用并发
+            - 静态编译，无 glibc 依赖
+            
+            ### 校验和 (SHA256)
+            查看 `checksums.txt` 获取各个版本的哈希值。
           draft: false
           prerelease: false
