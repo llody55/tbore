@@ -1,4 +1,3 @@
-// tbore: 基于 SSH 隧道的内网穿透工具 (Transparent Bore)
 package main
 
 import (
@@ -17,44 +16,46 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+	"gopkg.in/yaml.v3"
 )
 
-const version = "0.2.3"
+const version = "0.3.0"
 
-// ====================== 通用工具 ======================
+type TunnelConfig struct {
+	Name       string `yaml:"name"`
+	LocalIP    string `yaml:"local_ip"`
+	LocalPort  int    `yaml:"local_port"`
+	RemotePort uint32 `yaml:"remote_port"`
+}
+
+type Config struct {
+	Client struct {
+		Addr    string         `yaml:"server_addr"`
+		Port    int            `yaml:"server_port"`
+		Token   string         `yaml:"token"`
+		Tunnels []TunnelConfig `yaml:"tunnels"`
+	} `yaml:"client"`
+}
 
 func copyBidirectional(src, dst io.ReadWriteCloser) {
 	defer src.Close()
 	defer dst.Close()
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		io.Copy(dst, src)
-	}()
-	go func() {
-		defer wg.Done()
-		io.Copy(src, dst)
-	}()
+	go func() { defer wg.Done(); io.Copy(dst, src) }()
+	go func() { defer wg.Done(); io.Copy(src, dst) }()
 	wg.Wait()
 }
 
 func generateSigner() (ssh.Signer, error) {
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		return nil, err
-	}
-	privateKeyPEM := &pem.Block{
-		Type:  "RSA PRIVATE KEY",
-		Bytes: x509.MarshalPKCS1PrivateKey(key),
-	}
-	return ssh.ParsePrivateKey(pem.EncodeToMemory(privateKeyPEM))
+	key, _ := rsa.GenerateKey(rand.Reader, 2048)
+	pemKey := &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}
+	return ssh.ParsePrivateKey(pem.EncodeToMemory(pemKey))
 }
 
-// ====================== Server 端逻辑 ======================
 
 func runServer(port int, token string) {
-	config := &ssh.ServerConfig{
+	sshConfig := &ssh.ServerConfig{
 		PasswordCallback: func(c ssh.ConnMetadata, pass []byte) (*ssh.Permissions, error) {
 			if token != "" && string(pass) != token {
 				return nil, fmt.Errorf("auth failed")
@@ -62,182 +63,211 @@ func runServer(port int, token string) {
 			return nil, nil
 		},
 	}
+	signer, _ := generateSigner()
+	sshConfig.AddHostKey(signer)
 
-	signer, err := generateSigner()
+	listener, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", port))
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Server start error: %v", err)
 	}
-	config.AddHostKey(signer)
-
-	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	log.Printf("tbore server v%s listening on :%d", version, port)
+	log.Printf("tbore server v%s started on :%d", version, port)
 
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
 			continue
 		}
-
 		go func(nConn net.Conn) {
-			sConn, chans, reqs, err := ssh.NewServerConn(nConn, config)
+			sConn, chans, reqs, err := ssh.NewServerConn(nConn, sshConfig)
 			if err != nil {
 				return
 			}
-			defer sConn.Close()
+			
+			var activeListeners sync.Map
 
-			// 1. 处理全局请求 (tcpip-forward 在这里)
-			go handleServerRequests(sConn, reqs)
+			log.Printf("Session [%s] established", sConn.RemoteAddr())
 
-			// 2. 修正：手动处理并拒绝通道请求，不再调用 ssh.DiscardRequests(chans)
-			go func(in <-chan ssh.NewChannel) {
-				for newChan := range in {
-					newChan.Reject(ssh.Prohibited, "direct channel access not allowed")
+			go func() {
+				for req := range reqs {
+					switch req.Type {
+					case "tcpip-forward":
+						handleForwardRequest(sConn, req, &activeListeners)
+					case "keepalive@openssh.com":
+						req.Reply(true, nil)
+					default:
+						req.Reply(false, nil)
+					}
 				}
-			}(chans)
+			}()
+
+			go func() {
+				for newChan := range chans {
+					newChan.Reject(ssh.Prohibited, "denied")
+				}
+			}()
 
 			sConn.Wait()
+			log.Printf("Session [%s] closed, cleaning up ports...", sConn.RemoteAddr())
+			
+			activeListeners.Range(func(key, value interface{}) bool {
+				if ln, ok := value.(net.Listener); ok {
+					ln.Close()
+					log.Printf("Released port :%v", key)
+				}
+				return true
+			})
 		}(conn)
 	}
 }
 
-func handleServerRequests(sConn *ssh.ServerConn, reqs <-chan *ssh.Request) {
-	for req := range reqs {
-		if req.Type == "tcpip-forward" {
-			var msg struct {
-				Addr string
-				Port uint32
-			}
-			ssh.Unmarshal(req.Payload, &msg)
-
-			ln, err := net.Listen("tcp", "0.0.0.0:0")
-			if err != nil {
-				req.Reply(false, nil)
-				continue
-			}
-
-			_, portStr, _ := net.SplitHostPort(ln.Addr().String())
-			var actualPort uint32
-			fmt.Sscanf(portStr, "%d", &actualPort)
-
-			resp := make([]byte, 4)
-			binary.BigEndian.PutUint32(resp, actualPort)
-			req.Reply(true, resp)
-
-			log.Printf("Tunnel opened for %s on port %d", sConn.RemoteAddr(), actualPort)
-
-			go func(l net.Listener, p uint32) {
-				defer l.Close()
-				for {
-					userConn, err := l.Accept()
-					if err != nil {
-						return
-					}
-
-					go func(u net.Conn) {
-						defer u.Close()
-						addr, portStr, _ := net.SplitHostPort(u.RemoteAddr().String())
-						var port uint32
-						fmt.Sscanf(portStr, "%d", &port)
-
-						payload := struct {
-							Addr  string
-							Port  uint32
-							OAddr string
-							OPort uint32
-						}{
-							Addr:  "0.0.0.0",
-							Port:  p,
-							OAddr: addr,
-							OPort: port,
-						}
-
-						ch, reqs, err := sConn.OpenChannel("forwarded-tcpip", ssh.Marshal(&payload))
-						if err != nil {
-							return
-						}
-						go ssh.DiscardRequests(reqs)
-						copyBidirectional(u, ch)
-					}(userConn)
-				}
-			}(ln, actualPort)
-		} else {
-			req.Reply(false, nil)
-		}
+func handleForwardRequest(sConn *ssh.ServerConn, req *ssh.Request, listeners *sync.Map) {
+	var msg struct {
+		Addr string
+		Port uint32
 	}
+	ssh.Unmarshal(req.Payload, &msg)
+
+	ln, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", msg.Port))
+	if err != nil {
+		log.Printf("Bind failed for %d: %v", msg.Port, err)
+		req.Reply(false, nil)
+		return
+	}
+
+	_, portStr, _ := net.SplitHostPort(ln.Addr().String())
+	var actualPort uint32
+	fmt.Sscanf(portStr, "%d", &actualPort)
+
+	listeners.Store(actualPort, ln)
+
+	resp := make([]byte, 4)
+	binary.BigEndian.PutUint32(resp, actualPort)
+	req.Reply(true, resp)
+
+	log.Printf("[%s] Tunnel Active: :%d (requested: %d)", sConn.RemoteAddr(), actualPort, msg.Port)
+
+	go func() {
+		defer ln.Close()
+		for {
+			uConn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			
+			go func(user net.Conn) {
+				defer user.Close()
+				host, pStr, _ := net.SplitHostPort(user.RemoteAddr().String())
+				var p uint32
+				fmt.Sscanf(pStr, "%d", &p)
+
+				payload := struct {
+					Addr       string
+					Port       uint32
+					OriginAddr string
+					OriginPort uint32
+				}{
+					Addr:       msg.Addr,
+					Port:       actualPort,
+					OriginAddr: host,
+					OriginPort: p,
+				}
+
+				ch, r, err := sConn.OpenChannel("forwarded-tcpip", ssh.Marshal(&payload))
+				if err != nil {
+					return
+				}
+				go ssh.DiscardRequests(r)
+				copyBidirectional(user, ch)
+			}(uConn)
+		}
+	}()
 }
 
-// ====================== Client 端逻辑 ======================
 
-func runClient(serverAddr string, serverPort int, localPort int, token string) {
-	config := &ssh.ClientConfig{
+func runClient(cfg Config) {
+	sshConfig := &ssh.ClientConfig{
 		User:            "tbore",
-		Auth:            []ssh.AuthMethod{ssh.Password(token)},
+		Auth:            []ssh.AuthMethod{ssh.Password(cfg.Client.Token)},
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		Timeout:         10 * time.Second,
+		Timeout:         15 * time.Second,
 	}
 
 	for {
-		client, err := ssh.Dial("tcp", fmt.Sprintf("%s:%d", serverAddr, serverPort), config)
+		target := fmt.Sprintf("%s:%d", cfg.Client.Addr, cfg.Client.Port)
+		log.Printf("Connecting to %s...", target)
+		
+		client, err := ssh.Dial("tcp", target, sshConfig)
 		if err != nil {
-			log.Printf("Dial error: %v, retry in 5s", err)
+			log.Printf("Dial error: %v. Retry in 5s...", err)
 			time.Sleep(5 * time.Second)
 			continue
 		}
 
-		l, err := client.Listen("tcp", "0.0.0.0:0")
-		if err != nil {
-			log.Printf("Listen error: %v", err)
-			client.Close()
-			time.Sleep(5 * time.Second)
-			continue
-		}
-
-		log.Printf("SUCCESS: Tunnel established!")
-		log.Printf("Public Access -> %s:%d", serverAddr, l.Addr().(*net.TCPAddr).Port)
-
-		for {
-			remoteConn, err := l.Accept()
-			if err != nil {
-				break
-			}
-			go func(r net.Conn) {
-				localConn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", localPort))
-				if err != nil {
-					r.Close()
+		go func() {
+			t := time.NewTicker(20 * time.Second)
+			defer t.Stop()
+			for range t.C {
+				if _, _, err := client.SendRequest("keepalive@openssh.com", true, nil); err != nil {
+					client.Close()
 					return
 				}
-				copyBidirectional(r, localConn)
-			}(remoteConn)
+			}
+		}()
+
+		for _, t := range cfg.Client.Tunnels {
+			go func(tunnel TunnelConfig) {
+				l, err := client.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", tunnel.RemotePort))
+				if err != nil {
+					log.Printf("Tunnel [%s] failed: %v", tunnel.Name, err)
+					return
+				}
+				log.Printf("SUCCESS [%s]: :%d -> %s:%d", tunnel.Name, l.Addr().(*net.TCPAddr).Port, tunnel.LocalIP, tunnel.LocalPort)
+
+				for {
+					remote, err := l.Accept()
+					if err != nil { break }
+					go func(r net.Conn, tc TunnelConfig) {
+						local, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", tc.LocalIP, tc.LocalPort), 5*time.Second)
+						if err != nil {
+							r.Close()
+							return
+						}
+						copyBidirectional(r, local)
+					}(remote, tunnel)
+				}
+			}(t)
 		}
-		client.Close()
+		client.Wait()
+		log.Printf("Connection lost. Reconnecting...")
 		time.Sleep(5 * time.Second)
 	}
 }
 
 func main() {
+	serverCmd := flag.NewFlagSet("server", flag.ExitOnError)
+	sPort := serverCmd.Int("port", 7835, "Listen port")
+	sToken := serverCmd.String("token", "", "Auth token")
+
+	clientCmd := flag.NewFlagSet("client", flag.ExitOnError)
+	confPath := clientCmd.String("c", "config.yaml", "Path to config file")
+
 	if len(os.Args) < 2 {
 		fmt.Printf("tbore v%s\nUsage: tbore <server|client> [options]\n", version)
-		os.Exit(1)
+		return
 	}
-	cmd := os.Args[1]
-	switch cmd {
+
+	switch os.Args[1] {
 	case "server":
-		f := flag.NewFlagSet("server", flag.ExitOnError)
-		port := f.Int("port", 7835, "Listen port")
-		token := f.String("token", "", "Auth token")
-		f.Parse(os.Args[2:])
-		runServer(*port, *token)
+		serverCmd.Parse(os.Args[2:])
+		runServer(*sPort, *sToken)
 	case "client":
-		f := flag.NewFlagSet("client", flag.ExitOnError)
-		to := f.String("to", "", "Server IP")
-		port := f.Int("port", 7835, "Server port")
-		local := f.Int("local-port", 8080, "Local port")
-		token := f.String("token", "", "Auth token")
-		f.Parse(os.Args[2:])
-		runClient(*to, *port, *local, *token)
+		clientCmd.Parse(os.Args[2:])
+		data, err := os.ReadFile(*confPath)
+		if err != nil { log.Fatal(err) }
+		var cfg Config
+		yaml.Unmarshal(data, &cfg)
+		runClient(cfg)
+	default:
+		log.Fatal("Unknown command")
 	}
 }

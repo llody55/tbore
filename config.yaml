@@ -1,0 +1,17 @@
+client:
+  server_addr: "你的公网服务器IP"
+  server_port: 7835
+  token: "llody"
+  tunnels:
+    - name: "minio-local"
+      local_ip: "127.0.0.1"
+      local_port: 9001
+      remote_port: 8502 # 固定端口转发
+    - name: "mysql"
+      local_ip: "192.168.1.220"
+      local_port: 33066
+      remote_port: 8501 # 固定端口转发
+    - name: "225-other-host"
+      local_ip: "192.168.1.225"
+      local_port: 22
+      remote_port: 0 # 随机端口转发
