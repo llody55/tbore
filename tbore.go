@@ -19,7 +19,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const version = "0.3.0"
+const version = "0.3.1"
 
 type TunnelConfig struct {
 	Name       string `yaml:"name"`
@@ -40,10 +40,22 @@ type Config struct {
 func copyBidirectional(src, dst io.ReadWriteCloser) {
 	defer src.Close()
 	defer dst.Close()
+	
+	// 增加到 128KB 缓冲区，减少系统调用次数
+	bufA := make([]byte, 128*1024)
+	bufB := make([]byte, 128*1024)
+
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go func() { defer wg.Done(); io.Copy(dst, src) }()
-	go func() { defer wg.Done(); io.Copy(src, dst) }()
+	
+	go func() {
+		defer wg.Done()
+		io.CopyBuffer(dst, src, bufA)
+	}()
+	go func() {
+		defer wg.Done()
+		io.CopyBuffer(src, dst, bufB)
+	}()
 	wg.Wait()
 }
 
@@ -153,7 +165,14 @@ func handleForwardRequest(sConn *ssh.ServerConn, req *ssh.Request, listeners *sy
 			if err != nil {
 				return
 			}
-			
+
+			// 强制设置 NoDelay 减少延迟
+			if tcpConn, ok := uConn.(*net.TCPConn); ok {
+				tcpConn.SetNoDelay(true)
+				tcpConn.SetKeepAlive(true)
+				tcpConn.SetKeepAlivePeriod(3 * time.Minute)
+			}
+
 			go func(user net.Conn) {
 				defer user.Close()
 				host, pStr, _ := net.SplitHostPort(user.RemoteAddr().String())
@@ -231,6 +250,10 @@ func runClient(cfg Config) {
 						if err != nil {
 							r.Close()
 							return
+						}
+						// 强制设置 NoDelay
+						if tcpConn, ok := local.(*net.TCPConn); ok {
+							tcpConn.SetNoDelay(true)
 						}
 						copyBidirectional(r, local)
 					}(remote, tunnel)
