@@ -1,0 +1,86 @@
+<div class="layui-fluid" style="padding: 15px;">
+    <div class="layui-row layui-col-space15">
+        <div class="layui-col-md4">
+            <div class="layui-card stat-card-mini">
+                <div class="layui-card-body">
+                    <div class="stat-icon"><i class="layui-icon layui-icon-cellphone"></i></div>
+                    <div class="stat-content">
+                        <div class="stat-title">总设备数</div>
+                        <div class="stat-value" id="stat-total-device">0</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="layui-col-md4">
+            <div class="layui-card stat-card-mini">
+                <div class="layui-card-body">
+                    <div class="stat-icon online"><i class="layui-icon layui-icon-vercode"></i></div>
+                    <div class="stat-content">
+                        <div class="stat-title">当前在线</div>
+                        <div class="stat-value online" id="stat-online-device">0</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="layui-col-md4">
+            <div class="layui-card stat-card-mini">
+                <div class="layui-card-body">
+                    <div class="stat-icon offline"><i class="layui-icon layui-icon-close-fill"></i></div>
+                    <div class="stat-content">
+                        <div class="stat-title">异常/离线</div>
+                        <div class="stat-value offline">0</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="layui-row layui-col-space15">
+        <div class="layui-col-md12">
+            <div class="layui-card">
+                <div class="layui-card-header">
+                    <span>设备列表</span>
+                    <div class="layui-btn-group layui-layout-right" style="padding-top: 10px; right: 20px;">
+                        <button class="layui-btn layui-btn-primary layui-btn-sm" id="refresh-table">
+                            <i class="layui-icon layui-icon-refresh"></i>
+                        </button>
+                    </div>
+                </div>
+                <div class="layui-card-body">
+                    <form class="layui-form layui-form-pane" style="margin-bottom: 15px;">
+                        <div class="layui-inline">
+                            <input type="text" name="name" placeholder="搜索设备名称..." class="layui-input">
+                        </div>
+                        <button class="layui-btn layui-btn-normal" lay-submit lay-filter="search">搜索</button>
+                    </form>
+                    <table id="device-table" lay-filter="device-table"></table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    // 渲染状态的模板美化
+    var statusTpl = function(d) {
+        if(d.status === 'online') {
+            return '<span class="status-badge-green"><span class="dot-online"></span> 在线</span>';
+        }
+        return '<span class="status-badge-gray">离线</span>';
+    };
+
+    PageManager.init('device', {
+        table: {
+            elem: '#device-table',
+            url: '/api/v1/devices',
+            cols: [
+                {field: 'name', title: '设备名称', width: 180, style:'font-weight: bold;'},
+                {field: 'ip_address', title: '内网IP', width: 150},
+                {field: 'os', title: '系统', width: 120, templet: '<div><i class="layui-icon layui-icon-windows"></i> {{d.os}}</div>'},
+                {field: 'status', title: '状态', width: 100, templet: statusTpl},
+                {field: 'last_seen', title: '最后心跳', width: 180},
+                {title: '操作', toolbar: '#device-bar', fixed: 'right'}
+            ]
+        }
+    });
+</script>

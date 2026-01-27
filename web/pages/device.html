@@ -1,0 +1,562 @@
+<!-- 设备管理页面 -->
+<div class="layui-fluid" style="padding: 15px;">
+    <div class="layui-row layui-col-space15">
+        <div class="layui-col-md4">
+            <div class="layui-card stat-card-mini">
+                <div class="layui-card-body">
+                    <div class="stat-icon"><i class="layui-icon layui-icon-cellphone"></i></div>
+                    <div class="stat-content">
+                        <div class="stat-title">总设备数</div>
+                        <div class="stat-value" id="stat-total-device">0</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="layui-col-md4">
+            <div class="layui-card stat-card-mini">
+                <div class="layui-card-body">
+                    <div class="stat-icon online"><i class="layui-icon layui-icon-vercode"></i></div>
+                    <div class="stat-content">
+                        <div class="stat-title">当前在线</div>
+                        <div class="stat-value online" id="stat-online-device">0</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="layui-col-md4">
+            <div class="layui-card stat-card-mini">
+                <div class="layui-card-body">
+                    <div class="stat-icon offline"><i class="layui-icon layui-icon-close-fill"></i></div>
+                    <div class="stat-content">
+                        <div class="stat-title">异常/离线</div>
+                        <div class="stat-value offline">0</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="layui-row layui-col-space15">
+        <div class="layui-col-md12">
+            <div class="layui-card">
+                <div class="layui-card-header">
+                    <span>设备列表</span>
+                </div>
+                <div class="layui-card-body">
+                    <form class="layui-form layui-form-pane" style="margin-bottom: 15px; display: flex; justify-content: flex-start; align-items: center; flex-wrap: wrap; gap: 10px;">
+                        <div style="display: flex; align-items: center; gap: 10px;">
+                            <button type="button" class="layui-btn layui-btn-sm layui-btn-danger" id="batch-delete-btn">
+                                <i class="layui-icon layui-icon-delete"></i> 批量删除
+                            </button>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 10px; margin-left: auto;">
+                            <div class="layui-inline">
+                                <input type="text" name="name" placeholder="搜索设备名称..." class="layui-input" style="width: 200px;">
+                            </div>
+                            <button class="layui-btn layui-btn-normal" lay-submit lay-filter="search">搜索</button>
+                            <button type="button" class="layui-btn layui-btn-primary layui-btn-sm" id="refresh-table">
+                                <i class="layui-icon layui-icon-refresh"></i> 刷新
+                            </button>
+                        </div>
+                    </form>
+                    
+                    <!-- 行工具模板 -->
+                    <script type="text/html" id="barDemo">
+                        <div class="layui-btn-group">
+                            <a class="layui-btn layui-btn-xs layui-btn-primary" lay-event="webterm"><i class="layui-icon layui-icon-terminal"></i> Web终端</a>
+                            <a class="layui-btn layui-btn-xs layui-btn-primary" lay-event="more"><i class="layui-icon layui-icon-down"></i> 更多</a>
+                        </div>
+                    </script>
+                    
+                    <table id="device-table" lay-filter="device-table"></table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    // 设备管理页面配置
+    function initPage() {
+        PageManager.init('device', {
+            // 表格配置
+            table: {
+                elem: '#device-table',
+                url: '/api/v1/devices',
+                toolFilter: 'device-table',
+                checkFilter: 'device-table',
+                cols: [
+                    {type: 'checkbox', fixed: 'left'},
+                    {field: 'id', title: 'ID', width: 80, sort: true},
+                    {field: 'name', title: '设备名称', width: 150},
+                    {field: 'agent_id', title: 'Agent ID', width: 200},
+                    {field: 'ip_address', title: 'IP地址', width: 150},
+                    {field: 'os', title: '操作系统', width: 150},
+                    {field: 'status', title: '状态', width: 100, templet: function(d) {
+                        return d.status === 'online' ? '<span class="status-normal"><span class="pulse-dot"></span> 在线</span>' : '<span class="status-error"><span class="layui-badge-dot"></span> 离线</span>';
+                    }},
+                    {field: 'last_heartbeat', title: '最后心跳', width: 180},
+                    {field: 'created_at', title: '创建时间', width: 180},
+                    {title: '操作', width: 280, align: 'center', fixed: 'right', toolbar: '#barDemo', align: "center" }
+                ]
+            },
+            // 事件配置
+            events: {
+                // 监听表格工具事件
+                'tool(device-table)': function(obj) {
+                    switch(obj.event) {
+                        case 'webterm':
+                            // 打开Web终端
+                            openWebTerminal(obj.data);
+                            break;
+                        case 'edit':
+                            editDevice(obj.data);
+                            break;
+                        case 'delete':
+                            PageManager.layui.layer.confirm('确定要删除该设备吗？<br>注意：删除后，该设备的所有隧道将被断开，且数据不可恢复！', {
+                                icon: 3, 
+                                title: '警告', 
+                                shade: 0, // 不显示遮罩层，避免背景变灰
+                                shadeClose: true, // 点击遮罩层外区域关闭
+                                zIndex: layer.zIndex + 100 // 设置更高的zIndex确保不被遮挡
+                            }, function(index) {
+                                // 单个删除逻辑（待实现）
+                                PageManager.showMessage('删除功能开发中', 0);
+                                PageManager.layui.layer.close(index);
+                            });
+                            break;
+                        case 'bindAccount':
+                            bindAccount(obj.data);
+                            break;
+                        case 'unbindAccount':
+                            unbindAccount(obj.data);
+                            break;
+                        case 'more':
+                            // 下拉菜单
+                            var dropdown = PageManager.layui.dropdown;
+                            var data = obj.data;
+                            var btnElem = obj.tr.find('.layui-btn-group .layui-btn:last-child');
+                            
+                            dropdown.render({
+                                elem: btnElem[0] // 触发事件的 DOM 对象
+                                , show: true // 外部事件触发即显示
+                                , data: [{
+                                    title: '编辑信息'
+                                    , id: 'edit'
+                                    , templet: '<span><i class="layui-icon layui-icon-edit" style="margin-right: 5px;"></i> 编辑信息</span>'
+                                }, {
+                                    title: '绑定账户'
+                                    , id: 'bindAccount'
+                                    , templet: '<span><i class="layui-icon layui-icon-link" style="margin-right: 5px;"></i> 绑定账户</span>'
+                                }, {
+                                    title: '解除绑定'
+                                    , id: 'unbindAccount'
+                                    , templet: '<span><i class="layui-icon layui-icon-unlink" style="margin-right: 5px;"></i> 解除绑定</span>'
+                                }, {
+                                    type: "-" // 分割线
+                                }, {
+                                    title: '删除设备'
+                                    , id: 'delete'
+                                    , templet: '<span style="color: red;"><i class="layui-icon layui-icon-delete" style="margin-right: 5px;"></i> 删除设备</span>'
+                                }]
+                                , click: function(menudata) {
+                                    if (menudata.id === 'edit') {
+                                        editDevice(data);
+                                    } else if (menudata.id === 'bindAccount') {
+                                        bindAccount(data);
+                                    } else if (menudata.id === 'unbindAccount') {
+                                        unbindAccount(data);
+                                    } else if (menudata.id === 'delete') {
+                                        PageManager.layui.layer.confirm('确定要删除该设备吗？<br>注意：删除后，该设备的所有隧道将被断开，且数据不可恢复！', {
+                                            icon: 3,
+                                            title: '警告',
+                                            shade: 0,
+                                            shadeClose: true,
+                                            zIndex: PageManager.layui.layer.zIndex + 100
+                                        }, function(index) {
+                                            // 单个删除逻辑
+                                            PageManager.showMessage('删除功能开发中', 0);
+                                            PageManager.layui.layer.close(index);
+                                        });
+                                    }
+                                }
+                            });
+                            break;
+                    }
+                }
+            },
+            // 页面初始化回调
+            onInit: function() {
+                // 加载统计数据
+                loadDeviceStats();
+                
+                // 绑定按钮事件
+                $('#batch-delete-btn').on('click', function() {
+                    var checkStatus = PageManager.layui.table.checkStatus('device-table');
+                    if (checkStatus.data.length > 0) {
+                        PageManager.layui.layer.confirm('确定要删除选中的设备吗？<br>注意：删除后，这些设备的所有隧道将被断开，且数据不可恢复！', {
+                            icon: 3, 
+                            title: '警告', 
+                            shade: 0, // 不显示遮罩层，避免背景变灰
+                            shadeClose: true, // 点击遮罩层外区域关闭
+                            zIndex: layer.zIndex + 100 // 设置更高的zIndex确保不被遮挡
+                        }, function(index) {
+                            // 批量删除逻辑（待实现）
+                            PageManager.showMessage('删除功能开发中', 0);
+                            PageManager.layui.layer.close(index);
+                        });
+                    } else {
+                        PageManager.showMessage('请先选择要删除的设备', 0);
+                    }
+                });
+                
+                $('#refresh-table').on('click', function() {
+                    PageManager.refreshTable();
+                    loadDeviceStats();
+                });
+            }
+        });
+    }
+    
+    // 加载设备统计数据
+    function loadDeviceStats() {
+        Utils.ajax({
+            url: '/api/v1/devices',
+            type: 'GET',
+            success: function(res) {
+                var devices = res.data || [];
+                var total = devices.length;
+                var online = devices.filter(function(device) { return device.status === 'online'; }).length;
+                var offline = devices.filter(function(device) { return device.status === 'offline'; }).length;
+                
+                // 更新统计数据
+                $('#stat-total-device').text(total);
+                $('#stat-online-device').text(online);
+                $('.stat-value.offline').eq(0).text(offline);
+            },
+            error: function(xhr) {
+                console.error('加载统计数据失败:', xhr);
+            }
+        });
+    }
+    // 打开Web终端
+    function openWebTerminal(device) {
+        // 获取设备绑定的账号列表
+        $.get('/api/v1/accounts', function(res) {
+            var accounts = res.data || [];
+            var accountOptions = '<option value="">手动输入</option>';
+            
+            // 生成所有账号选项，不进行设备过滤
+            $.each(accounts, function(i, account) {
+                accountOptions += '<option value="' + JSON.stringify(account) + '">' + account.name + ' (' + account.username + ')</option>';
+            });
+            
+            // 显示登录窗口
+            PageManager.layui.layer.open({
+                type: 1,
+                title: 'Web终端登录 - ' + device.name,
+                area: ['550px', '450px'],
+                offset: 'auto', // 居中显示
+                content: '<form class="layui-form" id="webterm-login-form" style="padding: 25px; text-align: center;">' +
+                    '<div class="layui-form-item" style="margin-bottom: 20px;">' +
+                        '<label class="layui-form-label" style="width: 100px;">选择账号</label>' +
+                        '<div class="layui-input-block" style="margin-left: 130px;">' +
+                            '<select name="account" id="webterm-account-select" style="width: 100%;">' + accountOptions + '</select>' +
+                        '</div>' +
+                    '</div>' +
+                    '<div class="layui-form-item" style="margin-bottom: 20px;">' +
+                        '<label class="layui-form-label" style="width: 100px;">用户名</label>' +
+                        '<div class="layui-input-block" style="margin-left: 130px;">' +
+                            '<input type="text" name="username" required lay-verify="required" placeholder="请输入用户名" autocomplete="off" class="layui-input" style="width: 100%;">' +
+                        '</div>' +
+                    '</div>' +
+                    '<div class="layui-form-item" style="margin-bottom: 20px;">' +
+                        '<label class="layui-form-label" style="width: 100px;">密码</label>' +
+                        '<div class="layui-input-block" style="margin-left: 130px;">' +
+                            '<input type="password" name="password" required lay-verify="required" placeholder="请输入密码" autocomplete="off" class="layui-input" style="width: 100%;">' +
+                        '</div>' +
+                    '</div>' +
+                    '<div class="layui-form-item" style="margin-bottom: 20px;">' +
+                        '<label class="layui-form-label" style="width: 100px;">目标端口</label>' +
+                        '<div class="layui-input-block" style="margin-left: 130px;">' +
+                            '<input type="number" name="port" value="22" required lay-verify="required" placeholder="请输入SSH端口" autocomplete="off" class="layui-input" style="width: 100%;">' +
+                        '</div>' +
+                    '</div>' +
+                    '<div class="layui-form-item" style="margin-bottom: 25px;">' +
+                        '<label class="layui-form-label" style="width: 100px;">终端尺寸</label>' +
+                        '<div class="layui-input-block" style="margin-left: 130px;">' +
+                            '<div style="display: flex; align-items: center; gap: 10px;">' +
+                                '<input type="number" name="cols" value="80" required lay-verify="required" placeholder="列" autocomplete="off" class="layui-input" style="width: 80px;">' +
+                                '<span style="font-size: 16px;">×</span>' +
+                                '<input type="number" name="rows" value="24" required lay-verify="required" placeholder="行" autocomplete="off" class="layui-input" style="width: 80px;">' +
+                            '</div>' +
+                        '</div>' +
+                    '</div>' +
+                    '<div class="layui-form-item layui-form-text" style="margin-top: 25px;">' +
+                        '<div class="layui-input-block" style="margin-left: 0;text-align: center;">' +
+                            '<button type="button" class="layui-btn layui-btn-primary" onclick="PageManager.layui.layer.closeAll()" style="margin-right: 15px; width: 100px;">取消</button>' +
+                            '<button class="layui-btn layui-btn-normal" lay-submit lay-filter="webterm-login-submit" style="width: 100px;">连接</button>' +
+                        '</div>' +
+                    '</div>' +
+                '</form>',
+                success: function(layero, index) {
+                    PageManager.layui.form.render();
+                    
+                    // 监听账号选择变化
+                    $('#webterm-account-select').on('change', function() {
+                        var accountStr = $(this).val();
+                        if (accountStr) {
+                            var account = JSON.parse(accountStr);
+                            $('input[name="username"]').val(account.username);
+                            $('input[name="password"]').val(account.password);
+                        } else {
+                            $('input[name="username"]').val('');
+                            $('input[name="password"]').val('');
+                        }
+                    });
+                    
+                    // 监听表单提交
+                    PageManager.layui.form.on('submit(webterm-login-submit)', function(loginData) {
+                        // 关闭登录窗口
+                        PageManager.layui.layer.close(index);
+                        
+                        // 打开终端窗口
+                        var terminalIndex = PageManager.layui.layer.open({
+                            type: 1,
+                            title: 'Web终端 - ' + device.name + ' (' + loginData.field.username + '@' + device.ip_address + ':' + loginData.field.port + ')',
+                            area: ['900px', '700px'],
+                            offset: 'auto', // 居中显示
+                            content: '<div id="webterm-container" style="width: 100%; height: 100%; background: #000; padding: 10px; box-sizing: border-box;"><div id="terminal" style="width: 100%; height: 100%;"></div></div>',
+                            success: function(layero, index) {
+                                // 使用TerminalManager初始化终端
+                                TerminalManager.init('terminal', device, loginData.field);
+                            },
+                            end: function() {
+                                // 关闭终端时清理资源
+                                TerminalManager.close();
+                            },
+                            shade: 0, // 不显示遮罩层
+                            shadeClose: false // 点击遮罩不关闭
+                        });
+                    
+                    return false;
+                    });
+            },
+            shade: 0, // 不显示遮罩层
+            shadeClose: false // 点击遮罩不关闭
+        });
+    });
+    }
+    
+
+    
+    // 处理设备操作
+    window.handleDeviceAction = function(deviceId, action) {
+        // 根据设备ID获取设备数据
+        var table = PageManager.layui.table;
+        var data = table.cache['device-table'];
+        var device = null;
+        
+        for (var i = 0; i < data.length; i++) {
+            if (data[i].id == deviceId) {
+                device = data[i];
+                break;
+            }
+        }
+        
+        if (!device) return;
+        
+        // 执行对应操作
+        switch(action) {
+            case 'edit':
+                editDevice(device);
+                break;
+            case 'bindAccount':
+                bindAccount(device);
+                break;
+            case 'unbindAccount':
+                unbindAccount(device);
+                break;
+            case 'delete':
+                PageManager.layui.layer.confirm('确定要删除该设备吗？<br>注意：删除后，该设备的所有隧道将被断开，且数据不可恢复！', {
+                    icon: 3, 
+                    title: '警告', 
+                    shade: 0, // 不显示遮罩层，避免背景变灰
+                    shadeClose: true, // 点击遮罩层外区域关闭
+                    zIndex: layer.zIndex + 100 // 设置更高的zIndex确保不被遮挡
+                }, function(index) {
+                    // 单个删除逻辑（待实现）
+                    PageManager.showMessage('删除功能开发中', 0);
+                    PageManager.layui.layer.close(index);
+                });
+                break;
+        }
+        
+        // 关闭菜单
+        $('.layui-dropdown').remove();
+    }
+    
+    // 绑定账户
+    function bindAccount(device) {
+        // 获取所有账户列表
+        $.get('/api/v1/accounts', function(res) {
+            var accounts = res.data || [];
+            var accountOptions = '<option value="">请选择要绑定的账户</option>';
+            
+            // 生成账号选择选项
+            $.each(accounts, function(i, account) {
+                accountOptions += '<option value="' + account.id + '" data-username="' + account.username + '" data-password="' + account.password + '">' + account.name + ' (' + account.username + ')</option>';
+            });
+            
+            // 显示绑定账户窗口
+            PageManager.layui.layer.open({
+                type: 1,
+                title: '绑定账户 - ' + device.name,
+                area: ['400px', '300px'],
+                content: '<form class="layui-form" id="bind-account-form"><div class="layui-form-item"><label class="layui-form-label">设备名称</label><div class="layui-input-block"><input type="text" value="' + device.name + '" readonly class="layui-input layui-bg-gray"></div></div><div class="layui-form-item"><label class="layui-form-label">设备IP</label><div class="layui-input-block"><input type="text" value="' + device.ip_address + '" readonly class="layui-input layui-bg-gray"></div></div><div class="layui-form-item"><label class="layui-form-label">选择账户</label><div class="layui-input-block"><select name="account_id" id="account-select">' + accountOptions + '</select></div></div><div class="layui-form-item layui-form-text"><div class="layui-input-block"><button class="layui-btn" lay-submit lay-filter="bind-account-submit">绑定</button><button type="button" class="layui-btn layui-btn-primary" onclick="PageManager.layui.layer.closeAll()">取消</button></div></div></form>',
+                success: function(layero, index) {
+                    PageManager.layui.form.render();
+                    
+                    // 监听表单提交
+                    PageManager.layui.form.on('submit(bind-account-submit)', function(formData) {
+                        var accountId = formData.field.account_id;
+                        if (!accountId) {
+                            PageManager.layui.layer.msg('请选择要绑定的账户', {icon: 2});
+                            return false;
+                        }
+                        
+                        // 发送绑定请求
+                        $.ajax({
+                            url: '/api/v1/accounts/' + accountId + '/devices',
+                            type: 'POST',
+                            contentType: 'application/json',
+                            data: JSON.stringify({device_id: device.id}),
+                            success: function(res) {
+                                if (res.code === 200) {
+                                    PageManager.layui.layer.msg('账户绑定成功', {icon: 1});
+                                    PageManager.refreshTable();
+                                    PageManager.layui.layer.close(index);
+                                } else {
+                                    PageManager.layui.layer.msg('绑定失败: ' + res.msg, {icon: 2});
+                                }
+                            },
+                            error: function(xhr) {
+                                var errorMsg = '网络错误';
+                                if (xhr.responseJSON && xhr.responseJSON.error) {
+                                    errorMsg = xhr.responseJSON.error;
+                                }
+                                PageManager.layui.layer.msg(errorMsg, {icon: 2});
+                            }
+                        });
+                        
+                        return false;
+                    });
+                },
+                shade: 0, // 不显示遮罩层
+                shadeClose: false // 点击遮罩不关闭
+            });
+        });
+    }
+    
+    // 解除绑定账户
+    function unbindAccount(device) {
+        // 获取设备绑定的账户列表
+        $.get('/api/v1/accounts', function(res) {
+            var accounts = res.data || [];
+            var deviceAccounts = accounts.filter(function(account) {
+                return account.Devices && account.Devices.some(function(d) {
+                    return d.id === device.id;
+                });
+            });
+            
+            if (deviceAccounts.length === 0) {
+                PageManager.layui.layer.msg('该设备未绑定任何账户', {icon: 0});
+                return;
+            }
+            
+            var accountOptions = '<option value="">请选择要解除绑定的账户</option>';
+            $.each(deviceAccounts, function(i, account) {
+                accountOptions += '<option value="' + account.id + '">' + account.name + ' (' + account.username + ')</option>';
+            });
+            
+            // 显示解除绑定窗口
+            PageManager.layui.layer.open({
+                type: 1,
+                title: '解除绑定账户 - ' + device.name,
+                area: ['400px', '300px'],
+                content: '<form class="layui-form" id="unbind-account-form"><div class="layui-form-item"><label class="layui-form-label">设备名称</label><div class="layui-input-block"><input type="text" value="' + device.name + '" readonly class="layui-input layui-bg-gray"></div></div><div class="layui-form-item"><label class="layui-form-label">设备IP</label><div class="layui-input-block"><input type="text" value="' + device.ip_address + '" readonly class="layui-input layui-bg-gray"></div></div><div class="layui-form-item"><label class="layui-form-label">已绑定账户</label><div class="layui-input-block"><select name="account_id" id="unbind-account-select">' + accountOptions + '</select></div></div><div class="layui-form-item layui-form-text"><div class="layui-input-block"><button class="layui-btn layui-btn-danger" lay-submit lay-filter="unbind-account-submit">解除绑定</button><button type="button" class="layui-btn layui-btn-primary" onclick="PageManager.layui.layer.closeAll()">取消</button></div></div></form>',
+                success: function(layero, index) {
+                    PageManager.layui.form.render();
+                    
+                    // 监听表单提交
+                    PageManager.layui.form.on('submit(unbind-account-submit)', function(formData) {
+                        var accountId = formData.field.account_id;
+                        if (!accountId) {
+                            PageManager.layui.layer.msg('请选择要解除绑定的账户', {icon: 2});
+                            return false;
+                        }
+                        
+                        // 发送解除绑定请求
+                        $.ajax({
+                            url: '/api/v1/accounts/' + accountId + '/devices/' + device.id,
+                            type: 'DELETE',
+                            success: function(res) {
+                                if (res.code === 200) {
+                                    PageManager.layui.layer.msg('账户解除绑定成功', {icon: 1});
+                                    PageManager.refreshTable();
+                                    PageManager.layui.layer.close(index);
+                                } else {
+                                    PageManager.layui.layer.msg('解除绑定失败: ' + res.msg, {icon: 2});
+                                }
+                            },
+                            error: function(xhr) {
+                                var errorMsg = '网络错误';
+                                if (xhr.responseJSON && xhr.responseJSON.error) {
+                                    errorMsg = xhr.responseJSON.error;
+                                }
+                                PageManager.layui.layer.msg(errorMsg, {icon: 2});
+                            }
+                        });
+                        
+                        return false;
+                    });
+                },
+                shade: 0, // 不显示遮罩层
+                shadeClose: false // 点击遮罩不关闭
+            });
+        });
+    }
+    
+    // 编辑设备
+    function editDevice(data) {
+        PageManager.layui.layer.open({
+            type: 1,
+            title: '编辑设备',
+            area: ['500px', '300px'],
+            content: '<form class="layui-form" id="device-edit-form"><div class="layui-form-item"><label class="layui-form-label">设备名称</label><div class="layui-input-block"><input type="text" name="name" value="'+data.name+'" required lay-verify="required" placeholder="请输入设备名称" autocomplete="off" class="layui-input"></div></div><div class="layui-form-item"><label class="layui-form-label">状态</label><div class="layui-input-block"><select name="status"><option value="online" '+(data.status === 'online' ? 'selected' : '')+'>在线</option><option value="offline" '+(data.status === 'offline' ? 'selected' : '')+'>离线</option></select></div></div><div class="layui-form-item layui-form-text"><div class="layui-input-block"><button class="layui-btn" lay-submit lay-filter="device-edit-submit">保存</button><button type="button" class="layui-btn layui-btn-primary" onclick="PageManager.layui.layer.closeAll()">取消</button></div></div></form>',
+            success: function(layero, index) {
+                PageManager.layui.form.render();
+                
+                // 监听表单提交
+                PageManager.layui.form.on('submit(device-edit-submit)', function(editData) {
+                    Utils.ajax({
+                        url: '/api/v1/devices/' + data.id,
+                        type: 'PUT',
+                        data: JSON.stringify(editData.field),
+                        success: function(res) {
+                            PageManager.showMessage('更新成功', 1);
+                            PageManager.refreshTable();
+                            PageManager.layui.layer.closeAll();
+                        },
+                        error: function(xhr) {
+                            PageManager.showMessage('更新失败: ' + (xhr.responseJSON ? xhr.responseJSON.error : '未知错误'), 2);
+                        }
+                    });
+                    return false;
+                });
+            },
+            shade: 0, // 不显示遮罩层
+            shadeClose: false // 点击遮罩不关闭
+        });
+    }
+</script>

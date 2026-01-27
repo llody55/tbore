@@ -1,0 +1,385 @@
+<!-- 账号管理页面 -->
+<div class="layui-fluid" style="padding: 15px;">
+    <div class="layui-row layui-col-space15">
+        <div class="layui-col-md4">
+            <div class="layui-card stat-card-mini">
+                <div class="layui-card-body">
+                    <div class="stat-icon"><i class="layui-icon layui-icon-user"></i></div>
+                    <div class="stat-content">
+                        <div class="stat-title">总账号数</div>
+                        <div class="stat-value" id="stat-total-account">0</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="layui-col-md4">
+            <div class="layui-card stat-card-mini">
+                <div class="layui-card-body">
+                    <div class="stat-icon online"><i class="layui-icon layui-icon-vercode"></i></div>
+                    <div class="stat-content">
+                        <div class="stat-title">激活账号</div>
+                        <div class="stat-value online" id="stat-active-account">0</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="layui-col-md4">
+            <div class="layui-card stat-card-mini">
+                <div class="layui-card-body">
+                    <div class="stat-icon offline"><i class="layui-icon layui-icon-star-fill"></i></div>
+                    <div class="stat-content">
+                        <div class="stat-title">特权账号</div>
+                        <div class="stat-value offline" id="stat-privileged-account">0</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="layui-row layui-col-space15">
+        <div class="layui-col-md12">
+            <div class="layui-card">
+                <div class="layui-card-header">
+                    <div class="layui-btn-group">
+                        <button type="button" class="layui-btn layui-btn-normal" id="add-account-btn">
+                            <i class="layui-icon layui-icon-plus"></i> 新建账号
+                        </button>
+                    </div>
+                    <span style="margin-left: 10px;">账号列表</span>
+                </div>
+                <div class="layui-card-body">
+                    <form class="layui-form layui-form-pane" style="margin-bottom: 15px; display: flex; justify-content: flex-start; align-items: center; flex-wrap: wrap; gap: 10px;">
+                        <div style="display: flex; align-items: center; gap: 10px; margin-left: auto;">
+                            <div class="layui-inline">
+                                <input type="text" name="name" placeholder="搜索账号名称..." class="layui-input" style="width: 200px;">
+                            </div>
+                            <button class="layui-btn layui-btn-normal" lay-submit lay-filter="search">搜索</button>
+                            <button type="button" class="layui-btn layui-btn-primary layui-btn-sm" id="refresh-table">
+                                <i class="layui-icon layui-icon-refresh"></i> 刷新
+                            </button>
+                        </div>
+                    </form>
+                    <table id="account-table" lay-filter="account-table"></table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 账号表单弹出层 -->
+<div id="account-form" style="display: none; padding: 20px;">
+    <form class="layui-form" id="account-form-content">
+        <input type="hidden" name="id" value="">
+        
+        <div class="layui-form-item">
+            <label class="layui-form-label">账号名称</label>
+            <div class="layui-input-block">
+                <input type="text" name="name" placeholder="请输入账号名称" class="layui-input" lay-verify="required">
+            </div>
+        </div>
+        
+        <div class="layui-form-item">
+            <label class="layui-form-label">用户名</label>
+            <div class="layui-input-block">
+                <input type="text" name="username" placeholder="请输入登录用户名" class="layui-input" lay-verify="required">
+            </div>
+        </div>
+        
+        <div class="layui-form-item">
+            <label class="layui-form-label">认证类型</label>
+            <div class="layui-input-block">
+                <select name="auth_type" lay-verify="required">
+                    <option value="password">密码</option>
+                    <!-- 后续可扩展其他认证类型 -->
+                </select>
+            </div>
+        </div>
+        
+        <div class="layui-form-item">
+            <label class="layui-form-label">密码</label>
+            <div class="layui-input-block">
+                <input type="password" name="password" placeholder="请输入密码" class="layui-input" lay-verify="required">
+            </div>
+        </div>
+        
+        <div class="layui-form-item layui-form-text">
+            <label class="layui-form-label">备注</label>
+            <div class="layui-input-block">
+                <textarea name="description" placeholder="请输入备注信息" class="layui-textarea"></textarea>
+            </div>
+        </div>
+        
+        <div class="layui-form-item">
+            <label class="layui-form-label">状态</label>
+            <div class="layui-input-block">
+                <input type="checkbox" name="is_active" lay-skin="switch" lay-text="激活|禁用" checked>
+            </div>
+        </div>
+        
+        <div class="layui-form-item">
+            <label class="layui-form-label">特权账号</label>
+            <div class="layui-input-block">
+                <input type="checkbox" name="is_privileged" lay-skin="switch" lay-text="是|否">
+            </div>
+        </div>
+        
+        <div class="layui-form-item">
+            <div class="layui-input-block">
+                <button type="submit" class="layui-btn layui-btn-normal" lay-submit lay-filter="account-submit">保存</button>
+                <button type="button" class="layui-btn layui-btn-primary" id="account-form-close">取消</button>
+            </div>
+        </div>
+    </form>
+</div>
+
+<script>
+    // 账号管理页面配置
+    function initPage() {
+        PageManager.init('account', {
+            // 表格配置
+            table: {
+                elem: '#account-table',
+                url: '/api/v1/accounts',
+                toolFilter: 'account-table',
+                checkFilter: 'account-table',
+                cols: [
+                    {type: 'checkbox', fixed: 'left'},
+                    {field: 'id', title: 'ID', width: 80, sort: true},
+                    {field: 'name', title: '账号名称', width: 150},
+                    {field: 'username', title: '用户名', width: 150},
+                    {field: 'auth_type', title: '认证类型', width: 120},
+                {field: 'device_count', title: '关联设备数', width: 120, templet: function(d) {
+                    return d.devices ? d.devices.length : 0;
+                }},
+                {field: 'is_active', title: '状态', width: 100, templet: function(d) {
+                    return d.is_active ? '<span class="status-normal"><span class="pulse-dot"></span> 激活</span>' : '<span class="status-error"><span class="layui-badge-dot"></span> 禁用</span>';
+                }},
+                {field: 'is_privileged', title: '特权账号', width: 120, templet: function(d) {
+                    return d.is_privileged ? '<span class="layui-badge layui-bg-orange">是</span>' : '<span class="layui-badge layui-bg-gray">否</span>';
+                }},
+                {field: 'created_at', title: '创建时间', width: 180},
+                {title: '操作', width: 250, align: 'center', fixed: 'right', templet: function(d) {
+                    var actions = '<a class="layui-btn layui-btn-xs layui-btn-primary" lay-event="edit"><i class="layui-icon layui-icon-edit"></i> 编辑</a> ';
+                    if (d.is_active) {
+                        actions += '<a class="layui-btn layui-btn-xs layui-btn-danger" lay-event="disable"><i class="layui-icon layui-icon-close-fill"></i> 禁用</a> ';
+                    } else {
+                        actions += '<a class="layui-btn layui-btn-xs layui-btn-success" lay-event="enable"><i class="layui-icon layui-icon-ok"></i> 启用</a> ';
+                    }
+                    actions += '<a class="layui-btn layui-btn-xs layui-btn-danger" lay-event="delete"><i class="layui-icon layui-icon-delete"></i> 删除</a>';
+                    return actions;
+                }}
+            ]
+        },
+        // 页面初始化回调
+        onInit: function() {
+            var that = this;
+            
+            // 保存当前实例到PageManager.pages
+            PageManager.pages = PageManager.pages || {};
+            PageManager.pages.account = that;
+            
+            // 加载设备列表到下拉框
+            // 绑定新建账号按钮事件
+            $('#add-account-btn').on('click', function() {
+                that.openAddAccountForm();
+            });
+            
+            // 绑定表单关闭事件
+            $('#account-form-close').on('click', function() {
+                that.closeAccountForm();
+            });
+        },
+
+        // 打开新建账号表单
+        openAddAccountForm: function() {
+            // 重置表单
+            $('#account-form-content')[0].reset();
+            $('input[name="id"]').val('');
+            $('input[name="is_active"]').prop('checked', true);
+            $('input[name="is_privileged"]').prop('checked', false);
+            
+            // 渲染表单
+            layui.form.render();
+            
+            // 打开弹出层
+            var index = layer.open({
+                type: 1,
+                title: '新建账号',
+                content: $('#account-form'),
+                area: ['500px', 'auto'],
+                shade: 0, // 不显示遮罩层
+                shadeClose: true,
+                zIndex: layer.zIndex + 1
+            });
+            
+            // 保存弹出层索引
+            this.accountFormIndex = index;
+        },
+        // 关闭账号表单
+        closeAccountForm: function() {
+            if (this.accountFormIndex) {
+                layer.close(this.accountFormIndex);
+                this.accountFormIndex = null;
+            }
+        },
+        // 事件配置
+        events: {
+            // 监听表格工具事件
+            'tool(account-table)': function(obj) {
+                var data = obj.data;
+                var that = PageManager.pages.account;
+                
+                switch(obj.event) {
+                    case 'edit':
+                        that.openEditAccountForm(data);
+                        break;
+                    case 'disable':
+                        that.toggleAccountStatus(data.id, false);
+                        break;
+                    case 'enable':
+                        that.toggleAccountStatus(data.id, true);
+                        break;
+                    case 'delete':
+                        that.deleteAccount(data.id);
+                        break;
+                }
+            }
+        },
+        // 打开编辑账号表单
+        openEditAccountForm: function(data) {
+            // 填充表单数据
+            $('input[name="id"]').val(data.id);
+            $('input[name="name"]').val(data.name);
+            $('input[name="username"]').val(data.username);
+            $('select[name="auth_type"]').val(data.auth_type);
+            $('input[name="password"]').val(data.password);
+            $('textarea[name="description"]').val(data.description);
+            $('input[name="is_active"]').prop('checked', data.is_active);
+            $('input[name="is_privileged"]').prop('checked', data.is_privileged);
+            
+            // 渲染表单
+            layui.form.render();
+            
+            // 打开弹出层
+            var index = layer.open({
+                type: 1,
+                title: '编辑账号',
+                content: $('#account-form'),
+                area: ['500px', 'auto'],
+                shade: 0, // 不显示遮罩层
+                shadeClose: true,
+                zIndex: layer.zIndex + 1
+            });
+            
+            // 保存弹出层索引
+            this.accountFormIndex = index;
+        },
+        // 切换账号状态
+        toggleAccountStatus: function(id, isActive) {
+            var action = isActive ? '启用' : '禁用';
+            
+            layer.confirm('确定要' + action + '该账号吗？', {
+                icon: 3, 
+                title: '提示', 
+                shade: 0, // 不显示遮罩层，避免背景变灰
+                shadeClose: true, // 点击遮罩层外区域关闭
+                zIndex: layer.zIndex + 100 // 设置更高的zIndex确保不被遮挡
+            }, function(index) {
+                $.ajax({
+                    url: '/api/v1/accounts/' + id + '/status',
+                    type: 'PUT',
+                    success: function(res) {
+                        if (res.code === 200) {
+                            layer.msg(action + '成功', {icon: 1});
+                            // 刷新表格
+                            PageManager.refreshTable();
+                        } else {
+                            layer.msg(action + '失败: ' + res.msg, {icon: 2});
+                        }
+                    },
+                    error: function() {
+                        layer.msg('网络错误', {icon: 2});
+                    }
+                });
+                layer.close(index);
+            });
+        },
+        // 删除账号
+        deleteAccount: function(id) {
+            layer.confirm('确定要删除该账号吗？此操作不可恢复！', {
+                icon: 3, 
+                title: '警告', 
+                shade: 0, // 不显示遮罩层，避免背景变灰
+                shadeClose: true, // 点击遮罩层外区域关闭
+                zIndex: layer.zIndex + 100 // 设置更高的zIndex确保不被遮挡
+            }, function(index) {
+                $.ajax({
+                    url: '/api/v1/accounts/' + id,
+                    type: 'DELETE',
+                    success: function(res) {
+                        if (res.code === 200) {
+                            layer.msg('删除成功', {icon: 1});
+                            // 刷新表格
+                            PageManager.refreshTable();
+                        } else {
+                            layer.msg('删除失败: ' + res.msg, {icon: 2});
+                        }
+                    },
+                    error: function() {
+                        layer.msg('网络错误', {icon: 2});
+                    }
+                });
+                layer.close(index);
+            });
+        }
+    });
+    }
+    
+    // 监听表单提交事件
+    layui.form.on('submit(account-submit)', function(data) {
+            var formData = data.field;
+            var url = '/api/v1/accounts';
+            var method = 'POST';
+            
+            // 处理布尔值字段，将'on'转换为true，其他值转换为false
+            formData.is_active = formData.is_active === 'on';
+            formData.is_privileged = formData.is_privileged === 'on';
+            
+            // 如果是编辑，使用PUT方法
+            if (formData.id) {
+                url = '/api/v1/accounts/' + formData.id;
+                method = 'PUT';
+            } else {
+                // 新建账号时，删除id字段，避免发送空字符串导致后端绑定失败
+                delete formData.id;
+            }
+            
+            $.ajax({
+                url: url,
+                type: method,
+                contentType: 'application/json',
+                data: JSON.stringify(formData),
+                success: function(res) {
+                    if (res.code === 200) {
+                        layer.msg(formData.id ? '更新成功' : '创建成功', {icon: 1});
+                        // 关闭表单
+                        PageManager.pages.account.closeAccountForm();
+                        // 刷新表格
+                        PageManager.refreshTable();
+                    } else {
+                        layer.msg((formData.id ? '更新' : '创建') + '失败: ' + res.msg, {icon: 2});
+                    }
+                },
+                error: function(xhr) {
+                    // 显示具体的错误信息
+                    var errorMsg = '网络错误';
+                    if (xhr.responseJSON && xhr.responseJSON.error) {
+                        errorMsg = xhr.responseJSON.error;
+                    }
+                    layer.msg(errorMsg, {icon: 2});
+                }
+            });
+            
+            return false; // 阻止表单默认提交
+        });
+</script>
