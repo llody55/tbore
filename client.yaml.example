@@ -1,0 +1,13 @@
+server_addr: "your_server_ip"
+server_port: 7835
+token: "your_secure_secret_token_here"
+host_key: ""
+tunnels:
+  - name: "web-service"
+    local_ip: "127.0.0.1"
+    local_port: 8080
+    remote_port: 8501
+  - name: "ssh-tunnel"
+    local_ip: "192.168.1.10"
+    local_port: 22
+    remote_port: 0

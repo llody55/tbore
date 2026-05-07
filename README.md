@@ -7,139 +7,144 @@
 ### 🚀 核心特性
 
 * **多路复用 (Multiplexing)** ：原生支持并发连接，彻底解决数据库连接池等高并发场景下的链路阻塞问题。
-* **工业级安全** ：底层基于标准 SSH 协议，全量流量 AES 加密，支持 Token 身份验证。
-* **零配置启动** ：服务端自动在内存中生成 2048 位 RSA 密钥，无需手动配置证书或密钥文件。
-* **无依赖单文件** ：支持纯静态编译，可在任何 Linux 发行版（CentOS, Ubuntu, Alpine 等）运行，无 `glibc` 版本依赖。
-* **自动资源回收** ：服务端会话绑定技术，客户端下线后，其占用的公网端口将 **立即释放** ，彻底解决 `address already in use` 报错。
+* **工业级安全** ：底层基于标准 SSH 协议，全量流量 AES 加密，支持 HMAC-SHA256 挑战-响应认证。
+* **零配置启动** ：服务端自动生成并持久化存储 RSA 密钥，无需手动配置证书或密钥文件。
+* **无依赖单文件** ：支持纯静态编译，可在任何 Linux 发行版运行。
+* **自动资源回收** ：服务端会话绑定技术，客户端下线后，其占用的公网端口将 **立即释放**。
 * **心跳检测 (Keepalive)** ：内置双向心跳，有效应对运营商长连接清理及复杂的防火墙环境。
 * **自动重连** ：客户端具备心跳检测与断线自动重连机制，确保隧道长期可用。
 
----
-
 ### 📦 安装与编译
 
-为了确保在不同版本的 Linux（如旧版 CentOS7）上都能正常运行，推荐使用 Go 1.21+ 版本进行编译，为了确保最佳兼容性，建议使用以下命令进行 **静态编译** ：
-
 ```bash
-# 克隆仓库并安装依赖
-go mod init tbore
-go get golang.org/x/crypto/ssh
-go get gopkg.in/yaml.v3
+git clone https://github.com/tbore/tbore
+cd tbore
 go mod tidy
 
-# 静态编译（跨系统运行的终极方案）
+# 静态编译
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -ldflags '-extldflags "-static"' -o tbore tbore.go
 ```
 
----
-
 ### 🛠 快速上手
 
-#### 1. 服务端 (部署在公网服务器)
+#### 1. 服务端配置 (Server)
 
-启动服务端并监听 `7835` 端口（默认），同时设置验证 Token。
+创建 `server.yaml` 配置文件：
+
+```yaml
+port: 7835
+token: "your_secure_secret_token"
+min_port: 1024
+max_port: 65535
+max_connections: 100
+max_tunnels_per_client: 10
+bind_addr: "0.0.0.0"
+host_key_path: "./host_key"
+```
+
+启动服务端：
 
 ```bash
-./tbore server --port 7835 --token your_secret_token
+./tbore server -c server.yaml
+```
+
+服务端启动后会显示主机密钥指纹：
+
+```
+tbore server v0.4.0 started on 0.0.0.0:7835
+Host key fingerprint: SHA256:xxxx...
 ```
 
 #### 2. 客户端配置 (Client)
 
-创建 `config.yaml` 配置文件：
+创建 `client.yaml` 配置文件：
 
 ```yaml
-client:
-  server_addr: "你的服务器IP"
-  server_port: 7835
-  token: "your_secure_token"
-  tunnels:
-    - name: "web-service"
-      local_ip: "127.0.0.1"
-      local_port: 8080
-      remote_port: 8501   # 固定端口转发
+server_addr: "你的服务器IP"
+server_port: 7835
+token: "your_secure_secret_token"
+host_key: "SHA256:xxxx..."
+tunnels:
+  - name: "web-service"
+    local_ip: "127.0.0.1"
+    local_port: 8080
+    remote_port: 8501
 
-    - name: "ssh-tunnel"
-      local_ip: "192.168.1.10"
-      local_port: 22
-      remote_port: 0      # 随机端口转发
+  - name: "ssh-tunnel"
+    local_ip: "192.168.1.10"
+    local_port: 22
+    remote_port: 0
 ```
 
-#### 3. 客户端 (部署在内网机器)
+#### 3. 启动客户端
 
 ```bash
-./tbore client -c config.yaml
+./tbore client -c client.yaml
 ```
 
-### 📖 进阶用法：Systemd 后台运行
+### ⚙️ 配置说明
 
-为了保证服务在 Linux 后台稳定运行，建议使用 Systemd 管理。
+**服务端配置 (server.yaml)**：
 
-**服务端配置 (`/etc/systemd/system/tbore-server.service`):**
+| 配置项 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| port | int | 7835 | 控制端口 |
+| token | string | - | 认证密钥（必填） |
+| min_port | uint32 | 1024 | 最小允许绑定端口 |
+| max_port | uint32 | 65535 | 最大允许绑定端口 |
+| max_connections | int | 100 | 最大并发连接数 |
+| max_tunnels_per_client | int | 10 | 每个客户端最大隧道数 |
+| bind_addr | string | 0.0.0.0 | 绑定地址 |
+| host_key_path | string | - | 主机密钥存储路径 |
 
-```ini
-[Unit]
-Description=tbore Reverse Proxy Server
-After=network.target
+**客户端配置 (client.yaml)**：
 
-[Service]
-Type=simple
-ExecStart=/path/to/tbore server --port 7835 --token your_token
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-```
+| 配置项 | 类型 | 说明 |
+|--------|------|------|
+| server_addr | string | 服务端地址 |
+| server_port | int | 服务端端口 |
+| token | string | 认证密钥 |
+| host_key | string | 服务端主机密钥指纹（可选） |
+| tunnels | array | 隧道配置列表 |
 
 ### 🏗️ 技术架构
 
-`tbore` 的工作流程如下：
+1. **握手阶段** ：客户端生成随机挑战，计算 HMAC 响应，通过 SSH 连接服务端完成认证。
+2. **端口请求** ：客户端发起 `tcpip-forward` 请求，服务端验证端口范围后动态开启监听。
+3. **多路复用** ：当公网用户连接该端口时，服务端开启 `forwarded-tcpip` 逻辑通道。
+4. **双向转发** ：数据通过 SSH 隧道流向客户端，客户端与本地服务建立连接并进行转发。
 
-1. **握手阶段** ：客户端通过 TCP 连接服务端，并升级为 SSH 连接，完成 Token 验证。
-2. **端口请求** ：客户端发起 `tcpip-forward` 全局请求，服务端动态开启一个公网监听端口。
-3. **多路复用** ：当公网用户连接该端口时，服务端开启一个 `forwarded-tcpip` 逻辑通道。
-4. **双向转发** ：数据通过 SSH 隧道流向客户端，客户端与本地服务建立连接并进行 `io.Copy`。
+### 📊 安全特性
 
----
-
-### 📊 性能与使用边界 (Performance Guidelines)
-
-由于 `tbore` 目前基于 SSH (TCP) 隧道实现，其表现受限于物理网络延迟（RTT）。
-
-| **网络延迟 (RTT)** | **建议用途**    | **远程桌面 (RDP) 体验**      |
-| ------------------------ | --------------------- | ---------------------------------- |
-| **< 20ms**         | 任何服务              | **极度顺滑**(同城/内网级)    |
-| **20ms - 50ms**    | 数据库、Web、远程桌面 | **良好**(跨省，略有拖拽感)   |
-| **50ms - 100ms**   | 文件传输、SSH 命令行  | **一般**(会有明显的画面滞后) |
-| **> 100ms**        | 基础监控、轻量指令    | **不建议用于远程桌面**       |
-
-### ⚠️ 注意事项
-
-* **防火墙** ：请确保公网服务器的 `7835` 端口以及 tbore 动态分配的随机端口（如上面的 `8501`）在安全组/防火墙中已开放。
-* **自动重连** ：客户端内置了断线重连机制，当网络波动导致连接断开时，它每隔 5 秒会自动尝试恢复隧道。
+| 特性 | 说明 |
+|------|------|
+| HMAC-SHA256 认证 | 防暴力破解、防重放攻击 |
+| 端口范围限制 | 防止绑定特权端口（1-1023） |
+| 连接数限制 | 防止 DoS 攻击 |
+| 隧道数限制 | 防止端口耗尽 |
+| 主机密钥验证 | 防止中间人攻击 |
 
 ### 📅 版本更新记录
 
-v0.3.0 引入了协议层面的重大变更，与 v0.2.x 版本不兼容。
+#### v0.4.0
 
-#### v0.3.1(Latest)
+* **[SECURITY]** 引入 HMAC-SHA256 挑战-响应认证机制，防止暴力破解和重放攻击。
+* **[SECURITY]** 实现端口范围限制（默认 1024-65535），防止绑定特权端口。
+* **[SECURITY]** 实现连接数限制（默认 100）和隧道数限制（默认 10）。
+* **[SECURITY]** 强制要求 Token 认证，服务端必须配置 Token 才能启动。
+* **[NEW]** 服务端支持配置文件启动。
+* **[NEW]** 主机密钥持久化存储，支持客户端验证。
+* **[REFACTOR]** 项目重构为模块化结构。
 
-* **[性能]** 引入 `TCP_NODELAY` 算法优化，大幅降低了 RDP 远程桌面在 50ms 延迟内的操作迟滞。
+#### v0.3.1
+
+* **[性能]** 引入 `TCP_NODELAY` 算法优化。
 * **[吞吐]** 将内部转发缓冲区提升至 128KB。
-* **[修复]** 进一步加固了 `sync.Map` 在极端网络波动下的资源回收机制。
 
 #### v0.3.0
 
-* **[BREAKING]** 升级 SSH 转发载荷至 4 字段结构，提升协议标准一致性。
-* **[NEW]** 服务端引入 `sync.Map` 管理监听器，实现端口与连接生命周期的强绑定。
-* **[FIX]** 修复了在高并发连接下，旧监听器未关闭导致新连接无法绑定的 Bug。
-* **[FIX]** 修复了在某些 Linux 发行版上出现的 `port number out of range: 0` 错误。
-
-#### v0.2.3
-
-* 实现了基础的 Token 验证。
-* 支持 YAML 配置文件驱动多个隧道。
-* 加入了基础的 Keepalive 机制。
+* **[BREAKING]** 升级 SSH 转发载荷至 4 字段结构。
+* **[NEW]** 服务端引入 `sync.Map` 管理监听器。
 
 ### 📜 开源协议
 

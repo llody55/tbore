@@ -51,7 +51,7 @@ jobs:
           if [ "$GOOS" = "windows" ]; then
             BINARY_NAME="tbore.exe"
           fi
-          
+
           CGO_ENABLED=0 go build \
             -ldflags="-s -w -extldflags '-static'" \
             -o "$BINARY_NAME" \
@@ -89,7 +89,6 @@ jobs:
         run: |
           cd ./dist
           cat *.sha256 > checksums.txt
-          # rm *.sha256
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
@@ -99,16 +98,56 @@ jobs:
             ./dist/checksums.txt
           body: |
             ## tbore ${{ github.ref_name }}
-            这是 tbore 的一个重要稳定性更新版本，重构了端口管理逻辑并提升了协议标准一致性。
 
             ### ⚠️ 重要说明
-            - **协议不兼容**：由于升级了 SSH 转发载荷结构以符合 RFC 标准，**v0.3.0 不兼容 v0.2.x 版本**。
+            - **配置不兼容**：由于全面升级了安全特性配置格式，**v0.4.0 不兼容 v0.3.x 版本**。请参考 `server.yaml.example` 和 `client.yaml.example` 重新配置。
 
-            ### ✨ 新特性与改进
-            - **性能**：引入 TCP_NODELAY 算法优化，大幅降低了 RDP 远程桌面在 50ms 延迟内的操作迟滞。
-            - **吞吐**：将内部转发缓冲区提升至 128KB。
-            - **修复**：进一步加固了 sync.Map 在极端网络波动下的资源回收机制。
-            
+            ### 🔒 安全性改进 (Security)
+            - **[重大]** 引入 HMAC-SHA256 挑战-响应认证机制，有效防止暴力破解和重放攻击
+            - **[重大]** 实现主机密钥持久化存储与验证，有效防止中间人攻击 (MITM)
+            - **[重大]** 强制要求 Token 认证，服务端必须配置 Token 才能启动
+            - **[改进]** 端口范围限制（默认 1024-65535），防止绑定特权端口（1-1023）
+            - **[改进]** 连接数限制（默认 100），防止 DoS 攻击
+            - **[改进]** 隧道数限制（默认 10），防止单个客户端耗尽端口资源
+
+            ### 🏗️ 架构改进 (Architecture)
+            - **[重构]** 项目全面模块化重构，代码结构更加清晰
+            - **[重构]** 服务端支持配置文件启动（`-c server.yaml`）
+            - **[重构]** 客户端配置格式升级，支持更多选项
+
+            ### 🐛 Bug 修复
+            - 修复信号量管理逻辑错误导致的 panic
+            - 修复 SSH 配置未正确传递的问题
+            - 修复 copyBuffer 函数错误处理不完善的问题
+            - 修复隧道计数逻辑错误
+
+            ### 📋 配置示例
+
+            **服务端配置 (server.yaml)**：
+            ```yaml
+            port: 7835
+            token: "your_secure_secret_token"  # 必填！
+            min_port: 1024
+            max_port: 65535
+            max_connections: 100
+            max_tunnels_per_client: 10
+            bind_addr: "0.0.0.0"
+            host_key_path: "./host_key"
+            ```
+
+            **客户端配置 (client.yaml)**：
+            ```yaml
+            server_addr: "your_server_ip"
+            server_port: 7835
+            token: "your_secure_secret_token"
+            host_key: "SHA256:xxxx..."  # 可选，推荐填写以防止 MITM
+            tunnels:
+              - name: "web-service"
+                local_ip: "127.0.0.1"
+                local_port: 8080
+                remote_port: 8501
+            ```
+
             ### 校验和 (SHA256)
             查看 `checksums.txt` 获取各个版本的哈希值。
           draft: false

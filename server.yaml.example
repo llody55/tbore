@@ -1,0 +1,8 @@
+port: 7835
+token: "your_secure_secret_token_here"
+min_port: 1024
+max_port: 65535
+max_connections: 100
+max_tunnels_per_client: 10
+bind_addr: "0.0.0.0"
+host_key_path: "./host_key"
