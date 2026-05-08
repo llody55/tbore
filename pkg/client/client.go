@@ -101,6 +101,31 @@ func (c *Client) sendClientInfo(client *ssh.Client) error {
 	return err
 }
 
+func (c *Client) sendTunnelInfo(client *ssh.Client, tunnel config.TunnelConfig, actualPort uint32) {
+	info := struct {
+		Port      uint32 `json:"port"`
+		Name      string `json:"name"`
+		LocalIP   string `json:"local_ip"`
+		LocalPort int    `json:"local_port"`
+	}{
+		Port:      actualPort,
+		Name:      tunnel.Name,
+		LocalIP:   tunnel.LocalIP,
+		LocalPort: tunnel.LocalPort,
+	}
+
+	data, err := json.Marshal(info)
+	if err != nil {
+		log.Printf("Failed to send tunnel info: %v", err)
+		return
+	}
+
+	_, _, err = client.SendRequest("tbore-tunnel-info", true, data)
+	if err != nil {
+		log.Printf("Failed to send tunnel info: %v", err)
+	}
+}
+
 func (c *Client) sendKeepAlive(client *ssh.Client) {
 	t := time.NewTicker(20 * time.Second)
 	defer t.Stop()
@@ -120,7 +145,10 @@ func (c *Client) createTunnel(client *ssh.Client, tunnel config.TunnelConfig) {
 		return
 	}
 
-	log.Printf("SUCCESS [%s]: :%d -> %s:%d", tunnel.Name, l.Addr().(*net.TCPAddr).Port, tunnel.LocalIP, tunnel.LocalPort)
+	actualPort := uint32(l.Addr().(*net.TCPAddr).Port)
+	c.sendTunnelInfo(client, tunnel, actualPort)
+
+	log.Printf("SUCCESS [%s]: :%d -> %s:%d", tunnel.Name, actualPort, tunnel.LocalIP, tunnel.LocalPort)
 
 	for {
 		remote, err := l.Accept()

@@ -97,11 +97,14 @@ func generateSessionID() string {
 func (s *Server) Start() error {
 	sshConfig := &ssh.ServerConfig{
 		PasswordCallback: func(c ssh.ConnMetadata, pass []byte) (*ssh.Permissions, error) {
+			if len(pass) < 32 {
+				return nil, fmt.Errorf("invalid authentication data from %s", c.RemoteAddr())
+			}
 			challenge := string(pass[:32])
 			response := string(pass[32:])
 
 			if !s.auth.ValidateResponse(challenge, response) {
-				return nil, fmt.Errorf("authentication failed")
+				return nil, fmt.Errorf("authentication failed from %s", c.RemoteAddr())
 			}
 
 			return nil, nil
@@ -138,9 +141,11 @@ func (s *Server) Start() error {
 func (s *Server) handleConnection(conn net.Conn, sshConfig *ssh.ServerConfig) {
 	defer s.sem.Release(1)
 
+	remoteAddr := conn.RemoteAddr().String()
+
 	sshConn, chans, reqs, err := ssh.NewServerConn(conn, sshConfig)
 	if err != nil {
-		log.Printf("SSH handshake failed: %v", err)
+		log.Printf("SSH handshake failed from %s: %v", remoteAddr, err)
 		return
 	}
 
@@ -164,6 +169,8 @@ func (s *Server) handleConnection(conn net.Conn, sshConfig *ssh.ServerConfig) {
 				s.handleForwardRequest(sshConn, req, connInfo)
 			case "tbore-client-info":
 				s.handleClientInfoRequest(req, connInfo)
+			case "tbore-tunnel-info":
+				s.handleTunnelInfoRequest(req, connInfo)
 			case "keepalive@openssh.com":
 				req.Reply(true, nil)
 			default:
@@ -202,6 +209,27 @@ func (s *Server) handleClientInfoRequest(req *ssh.Request, connInfo *ConnectionI
 	connInfo.ClientInfo = info
 	log.Printf("Client info received for %s: project=%s, region=%s",
 		connInfo.ID, info.Project, info.Region)
+	req.Reply(true, nil)
+}
+
+func (s *Server) handleTunnelInfoRequest(req *ssh.Request, connInfo *ConnectionInfo) {
+	var info struct {
+		Port      uint32 `json:"port"`
+		Name      string `json:"name"`
+		LocalIP   string `json:"local_ip"`
+		LocalPort int    `json:"local_port"`
+	}
+	if err := json.Unmarshal(req.Payload, &info); err != nil {
+		log.Printf("Failed to parse tunnel info: %v", err)
+		req.Reply(false, nil)
+		return
+	}
+
+	if tunnel, ok := connInfo.Tunnels[info.Port]; ok {
+		tunnel.Name = info.Name
+		tunnel.LocalAddr = fmt.Sprintf("%s:%d", info.LocalIP, info.LocalPort)
+	}
+
 	req.Reply(true, nil)
 }
 
