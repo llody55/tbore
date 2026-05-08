@@ -20,6 +20,10 @@ func GenerateSigner() (ssh.Signer, error) {
 }
 
 func LoadOrGenerateSigner(path string) (ssh.Signer, error) {
+	if path == "" {
+		return GenerateSigner()
+	}
+
 	if _, err := os.Stat(path); err == nil {
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -35,7 +39,7 @@ func LoadOrGenerateSigner(path string) (ssh.Signer, error) {
 
 	pemKey := &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}
 	pemBytes := pem.EncodeToMemory(pemKey)
-	
+
 	err = os.WriteFile(path, pemBytes, 0600)
 	if err != nil {
 		return nil, err

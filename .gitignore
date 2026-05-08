@@ -1,0 +1,45 @@
+# Go 编译产物
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+tbore
+tbore-*
+
+# 开发工具
+bin/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 密钥文件
+host_key
+test_host_key
+*.key
+
+# 配置文件
+server.yaml
+client.yaml
+test_server.yaml
+test_client.yaml
+
+# Go 模块缓存
+go.sum
+vendor/
+
+# 日志文件
+*.log
+
+# 临时文件
+tmp/
+temp/
+
+# 检查和文件
+*.sha256
+checksums.txt
+
+# 构建产物
+dist/

@@ -1,6 +1,7 @@
 package client
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -14,15 +15,19 @@ import (
 )
 
 type Client struct {
-	cfg  *config.ClientConfig
-	auth *auth.Authenticator
+	cfg       *config.ClientConfig
+	auth      *auth.Authenticator
+	sshClient *ssh.Client
 }
 
-func NewClient(cfg *config.ClientConfig) *Client {
+func NewClient(cfg *config.ClientConfig) (*Client, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
 	return &Client{
 		cfg:  cfg,
 		auth: auth.NewAuthenticator(cfg.Token),
-	}
+	}, nil
 }
 
 func (c *Client) Start() {
@@ -56,6 +61,15 @@ func (c *Client) Start() {
 			continue
 		}
 
+		c.sshClient = client
+
+		if err := c.sendClientInfo(client); err != nil {
+			log.Printf("Failed to send client info: %v", err)
+			client.Close()
+			time.Sleep(5 * time.Second)
+			continue
+		}
+
 		go c.sendKeepAlive(client)
 
 		for _, t := range c.cfg.Tunnels {
@@ -63,9 +77,28 @@ func (c *Client) Start() {
 		}
 
 		client.Wait()
+		c.sshClient = nil
 		log.Printf("Connection lost. Reconnecting...")
 		time.Sleep(5 * time.Second)
 	}
+}
+
+func (c *Client) sendClientInfo(client *ssh.Client) error {
+	info := struct {
+		Project string `json:"project"`
+		Region  string `json:"region"`
+	}{
+		Project: c.cfg.Project,
+		Region:  c.cfg.Region,
+	}
+
+	data, err := json.Marshal(info)
+	if err != nil {
+		return err
+	}
+
+	_, _, err = client.SendRequest("tbore-client-info", true, data)
+	return err
 }
 
 func (c *Client) sendKeepAlive(client *ssh.Client) {
@@ -107,6 +140,7 @@ func (c *Client) handleRemoteConnection(remote net.Conn, tunnel config.TunnelCon
 		log.Printf("Failed to connect to local %s:%d: %v", tunnel.LocalIP, tunnel.LocalPort, err)
 		return
 	}
+	defer local.Close()
 
 	if tcpConn, ok := local.(*net.TCPConn); ok {
 		tcpConn.SetNoDelay(true)
@@ -135,6 +169,8 @@ func copyBuffer(dst, src net.Conn, buf []byte) {
 		if err != nil {
 			return
 		}
-		dst.Write(buf[:n])
+		if _, err := dst.Write(buf[:n]); err != nil {
+			return
+		}
 	}
 }

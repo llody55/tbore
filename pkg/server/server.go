@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -14,14 +15,59 @@ import (
 
 	"tbore/pkg/auth"
 	"tbore/pkg/config"
+	"tbore/pkg/version"
 )
 
+type TunnelState int
+
+const (
+	TunnelStateActive TunnelState = iota
+	TunnelStateIdle
+	TunnelStateError
+)
+
+func (s TunnelState) String() string {
+	switch s {
+	case TunnelStateActive:
+		return "active"
+	case TunnelStateIdle:
+		return "idle"
+	case TunnelStateError:
+		return "error"
+	default:
+		return "unknown"
+	}
+}
+
+type TunnelInfo struct {
+	RemotePort  uint32
+	LocalAddr   string
+	State       TunnelState
+	ActiveConns int32
+	Name        string
+	Listener    net.Listener
+}
+
+type ClientInfo struct {
+	Project string `json:"project"`
+	Region  string `json:"region"`
+}
+
+type ConnectionInfo struct {
+	ID          string
+	RemoteAddr  string
+	ConnectTime time.Time
+	Tunnels     map[uint32]*TunnelInfo
+	ClientInfo  ClientInfo
+}
+
 type Server struct {
-	cfg         *config.ServerConfig
-	auth        *auth.Authenticator
-	sem         *semaphore.Weighted
-	signer      ssh.Signer
-	activeConns sync.Map
+	cfg           *config.ServerConfig
+	auth          *auth.Authenticator
+	sem           *semaphore.Weighted
+	signer        ssh.Signer
+	activeConns   sync.Map
+	serverStarted time.Time
 }
 
 func NewServer(cfg *config.ServerConfig) (*Server, error) {
@@ -36,11 +82,16 @@ func NewServer(cfg *config.ServerConfig) (*Server, error) {
 	}
 
 	return &Server{
-		cfg:    cfg,
-		auth:   auth.NewAuthenticator(cfg.Token),
-		sem:    semaphore.NewWeighted(int64(cfg.MaxConnections)),
-		signer: signer,
+		cfg:           cfg,
+		auth:          auth.NewAuthenticator(cfg.Token),
+		sem:           semaphore.NewWeighted(int64(cfg.MaxConnections)),
+		signer:        signer,
+		serverStarted: time.Now(),
 	}, nil
+}
+
+func generateSessionID() string {
+	return fmt.Sprintf("sess_%x", time.Now().UnixNano())
 }
 
 func (s *Server) Start() error {
@@ -64,7 +115,7 @@ func (s *Server) Start() error {
 		return err
 	}
 
-	log.Printf("tbore server v0.4.0 started on %s:%d", s.cfg.BindAddr, s.cfg.Port)
+	log.Printf("tbore server v%s started on %s:%d", version.Version, s.cfg.BindAddr, s.cfg.Port)
 	log.Printf("Host key fingerprint: %s", auth.GetHostKeyFingerprint(s.signer))
 
 	for {
@@ -93,15 +144,26 @@ func (s *Server) handleConnection(conn net.Conn, sshConfig *ssh.ServerConfig) {
 		return
 	}
 
-	var activeListeners sync.Map
+	sessionID := generateSessionID()
 
-	log.Printf("Session [%s] established", sshConn.RemoteAddr())
+	connInfo := &ConnectionInfo{
+		ID:          sessionID,
+		RemoteAddr:  sshConn.RemoteAddr().String(),
+		ConnectTime: time.Now(),
+		Tunnels:     make(map[uint32]*TunnelInfo),
+	}
+
+	s.activeConns.Store(sessionID, connInfo)
+
+	log.Printf("Session [%s] established from %s", sessionID, sshConn.RemoteAddr())
 
 	go func() {
 		for req := range reqs {
 			switch req.Type {
 			case "tcpip-forward":
-				s.handleForwardRequest(sshConn, req, &activeListeners)
+				s.handleForwardRequest(sshConn, req, connInfo)
+			case "tbore-client-info":
+				s.handleClientInfoRequest(req, connInfo)
 			case "keepalive@openssh.com":
 				req.Reply(true, nil)
 			default:
@@ -117,18 +179,33 @@ func (s *Server) handleConnection(conn net.Conn, sshConfig *ssh.ServerConfig) {
 	}()
 
 	sshConn.Wait()
-	log.Printf("Session [%s] closed, cleaning up ports...", sshConn.RemoteAddr())
+	log.Printf("Session [%s] closed, cleaning up ports...", sessionID)
 
-	activeListeners.Range(func(key, value interface{}) bool {
-		if ln, ok := value.(net.Listener); ok {
-			ln.Close()
-			log.Printf("Released port :%v", key)
+	for port, tunnel := range connInfo.Tunnels {
+		if tunnel.Listener != nil {
+			tunnel.Listener.Close()
+			log.Printf("Released port :%d", port)
 		}
-		return true
-	})
+	}
+
+	s.activeConns.Delete(sessionID)
 }
 
-func (s *Server) handleForwardRequest(sshConn *ssh.ServerConn, req *ssh.Request, listeners *sync.Map) {
+func (s *Server) handleClientInfoRequest(req *ssh.Request, connInfo *ConnectionInfo) {
+	var info ClientInfo
+	if err := json.Unmarshal(req.Payload, &info); err != nil {
+		log.Printf("Failed to parse client info: %v", err)
+		req.Reply(false, nil)
+		return
+	}
+
+	connInfo.ClientInfo = info
+	log.Printf("Client info received for %s: project=%s, region=%s",
+		connInfo.ID, info.Project, info.Region)
+	req.Reply(true, nil)
+}
+
+func (s *Server) handleForwardRequest(sshConn *ssh.ServerConn, req *ssh.Request, connInfo *ConnectionInfo) {
 	var msg struct {
 		Addr string
 		Port uint32
@@ -141,14 +218,9 @@ func (s *Server) handleForwardRequest(sshConn *ssh.ServerConn, req *ssh.Request,
 		return
 	}
 
-	tunnelCount := 0
-	listeners.Range(func(key, value interface{}) bool {
-		tunnelCount++
-		return true
-	})
-	if tunnelCount >= s.cfg.MaxTunnels {
+	if len(connInfo.Tunnels) >= s.cfg.MaxTunnels {
 		req.Reply(false, nil)
-		log.Printf("Tunnel limit exceeded for %s (max: %d)", sshConn.RemoteAddr(), s.cfg.MaxTunnels)
+		log.Printf("Tunnel limit exceeded for %s (max: %d)", connInfo.ID, s.cfg.MaxTunnels)
 		return
 	}
 
@@ -163,23 +235,36 @@ func (s *Server) handleForwardRequest(sshConn *ssh.ServerConn, req *ssh.Request,
 	var actualPort uint32
 	fmt.Sscanf(portStr, "%d", &actualPort)
 
-	listeners.Store(actualPort, ln)
+	connInfo.Tunnels[actualPort] = &TunnelInfo{
+		RemotePort:  actualPort,
+		LocalAddr:   msg.Addr,
+		State:       TunnelStateActive,
+		ActiveConns: 0,
+		Listener:    ln,
+	}
 
 	resp := make([]byte, 4)
 	binary.BigEndian.PutUint32(resp, actualPort)
 	req.Reply(true, resp)
 
-	log.Printf("[%s] Tunnel Active: :%d (requested: %d)", sshConn.RemoteAddr(), actualPort, msg.Port)
+	log.Printf("[%s] Tunnel Active: :%d (requested: %d)", connInfo.ID, actualPort, msg.Port)
 
-	go s.acceptClientConnections(ln, sshConn, actualPort, msg.Addr)
+	go s.acceptClientConnections(ln, sshConn, actualPort, connInfo)
 }
 
-func (s *Server) acceptClientConnections(ln net.Listener, sshConn *ssh.ServerConn, actualPort uint32, addr string) {
-	defer ln.Close()
+func (s *Server) acceptClientConnections(ln net.Listener, sshConn *ssh.ServerConn, actualPort uint32, connInfo *ConnectionInfo) {
 	for {
 		uConn, err := ln.Accept()
 		if err != nil {
+			if tunnel, ok := connInfo.Tunnels[actualPort]; ok {
+				tunnel.State = TunnelStateIdle
+			}
 			return
+		}
+
+		if tunnel, ok := connInfo.Tunnels[actualPort]; ok {
+			tunnel.State = TunnelStateActive
+			tunnel.ActiveConns++
 		}
 
 		if tcpConn, ok := uConn.(*net.TCPConn); ok {
@@ -188,11 +273,11 @@ func (s *Server) acceptClientConnections(ln net.Listener, sshConn *ssh.ServerCon
 			tcpConn.SetKeepAlivePeriod(3 * time.Minute)
 		}
 
-		go s.handleClientConnection(uConn, sshConn, actualPort, addr)
+		go s.handleClientConnection(uConn, sshConn, actualPort, connInfo)
 	}
 }
 
-func (s *Server) handleClientConnection(user net.Conn, sshConn *ssh.ServerConn, actualPort uint32, addr string) {
+func (s *Server) handleClientConnection(user net.Conn, sshConn *ssh.ServerConn, actualPort uint32, connInfo *ConnectionInfo) {
 	defer user.Close()
 
 	host, pStr, _ := net.SplitHostPort(user.RemoteAddr().String())
@@ -205,7 +290,7 @@ func (s *Server) handleClientConnection(user net.Conn, sshConn *ssh.ServerConn, 
 		OriginAddr string
 		OriginPort uint32
 	}{
-		Addr:       addr,
+		Addr:       connInfo.Tunnels[actualPort].LocalAddr,
 		Port:       actualPort,
 		OriginAddr: host,
 		OriginPort: p,
@@ -232,6 +317,10 @@ func (s *Server) handleClientConnection(user net.Conn, sshConn *ssh.ServerConn, 
 		copyBuffer(ch, user, bufB)
 	}()
 	wg.Wait()
+
+	if tunnel, ok := connInfo.Tunnels[actualPort]; ok {
+		tunnel.ActiveConns--
+	}
 }
 
 func copyBuffer(dst, src io.ReadWriter, buf []byte) {
@@ -244,4 +333,26 @@ func copyBuffer(dst, src io.ReadWriter, buf []byte) {
 			return
 		}
 	}
+}
+
+func (s *Server) GetStatus() ServerStatus {
+	var connections []ConnectionInfo
+	s.activeConns.Range(func(key, value interface{}) bool {
+		if connInfo, ok := value.(*ConnectionInfo); ok {
+			connections = append(connections, *connInfo)
+		}
+		return true
+	})
+
+	return ServerStatus{
+		Uptime:      time.Since(s.serverStarted),
+		Connections: connections,
+		Config:      s.cfg,
+	}
+}
+
+type ServerStatus struct {
+	Uptime      time.Duration
+	Connections []ConnectionInfo
+	Config      *config.ServerConfig
 }

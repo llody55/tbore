@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 
 	"gopkg.in/yaml.v3"
@@ -22,14 +23,14 @@ type TunnelConfig struct {
 }
 
 type ServerConfig struct {
-	Port             int    `yaml:"port"`
-	Token            string `yaml:"token"`
-	MinPort          uint32 `yaml:"min_port"`
-	MaxPort          uint32 `yaml:"max_port"`
-	MaxConnections   int    `yaml:"max_connections"`
-	MaxTunnels       int    `yaml:"max_tunnels_per_client"`
-	BindAddr         string `yaml:"bind_addr"`
-	HostKeyPath      string `yaml:"host_key_path"`
+	Port           int    `yaml:"port"`
+	Token          string `yaml:"token"`
+	MinPort        uint32 `yaml:"min_port"`
+	MaxPort        uint32 `yaml:"max_port"`
+	MaxConnections int    `yaml:"max_connections"`
+	MaxTunnels     int    `yaml:"max_tunnels_per_client"`
+	BindAddr       string `yaml:"bind_addr"`
+	HostKeyPath    string `yaml:"host_key_path"`
 }
 
 type ClientConfig struct {
@@ -37,6 +38,8 @@ type ClientConfig struct {
 	ServerPort int            `yaml:"server_port"`
 	Token      string         `yaml:"token"`
 	HostKey    string         `yaml:"host_key"`
+	Project    string         `yaml:"project"`
+	Region     string         `yaml:"region"`
 	Tunnels    []TunnelConfig `yaml:"tunnels"`
 }
 
@@ -113,4 +116,28 @@ func (cfg *ServerConfig) IsValidPort(port uint32) bool {
 		return true
 	}
 	return port >= cfg.MinPort && port <= cfg.MaxPort
+}
+
+func (cfg *ClientConfig) Validate() error {
+	if cfg.ServerAddr == "" {
+		return ErrServerAddrRequired
+	}
+	if cfg.ServerPort == 0 {
+		return ErrServerPortRequired
+	}
+	if cfg.Token == "" {
+		return ErrTokenRequired
+	}
+	for i, tunnel := range cfg.Tunnels {
+		if tunnel.Name == "" {
+			return fmt.Errorf("tunnel[%d]: %w", i, ErrTunnelNameRequired)
+		}
+		if tunnel.LocalIP == "" {
+			return fmt.Errorf("tunnel[%d] (%s): %w", i, tunnel.Name, ErrTunnelLocalIPRequired)
+		}
+		if tunnel.LocalPort == 0 {
+			return fmt.Errorf("tunnel[%d] (%s): %w", i, tunnel.Name, ErrTunnelLocalPortRequired)
+		}
+	}
+	return nil
 }
