@@ -3,6 +3,7 @@ package client
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"sync"
@@ -70,6 +71,8 @@ func (c *Client) Start() {
 			continue
 		}
 
+		go c.handleServerChannels(client)
+
 		go c.sendKeepAlive(client)
 
 		for _, t := range c.cfg.Tunnels {
@@ -133,6 +136,70 @@ func (c *Client) sendKeepAlive(client *ssh.Client) {
 	for range t.C {
 		if _, _, err := client.SendRequest("keepalive@openssh.com", true, nil); err != nil {
 			client.Close()
+			return
+		}
+	}
+}
+
+func (c *Client) handleServerChannels(client *ssh.Client) {
+	for newCh := range client.HandleChannelOpen("forwarded-tcpip") {
+		var msg struct {
+			Addr       string
+			Port       uint32
+			OriginAddr string
+			OriginPort uint32
+		}
+		ssh.Unmarshal(newCh.ExtraData(), &msg)
+
+		local, err := net.DialTimeout("tcp", msg.Addr, 5*time.Second)
+		if err != nil {
+			log.Printf("Failed to connect to local %s: %v", msg.Addr, err)
+			newCh.Reject(ssh.ConnectionFailed, "failed to connect to local service")
+			continue
+		}
+
+		ch, reqs, err := newCh.Accept()
+		if err != nil {
+			log.Printf("Failed to accept channel: %v", err)
+			local.Close()
+			continue
+		}
+		go ssh.DiscardRequests(reqs)
+
+		go func(ch ssh.Channel, local net.Conn) {
+			defer ch.Close()
+			defer local.Close()
+
+			if tcpConn, ok := local.(*net.TCPConn); ok {
+				tcpConn.SetNoDelay(true)
+			}
+
+			bufA := make([]byte, 128*1024)
+			bufB := make([]byte, 128*1024)
+
+			var wg sync.WaitGroup
+			wg.Add(2)
+
+			go func() {
+				defer wg.Done()
+				copyBufferRW(local, ch, bufA)
+			}()
+			go func() {
+				defer wg.Done()
+				copyBufferRW(ch, local, bufB)
+			}()
+			wg.Wait()
+		}(ch, local)
+	}
+}
+
+func copyBufferRW(dst io.ReadWriter, src io.ReadWriter, buf []byte) {
+	for {
+		n, err := src.Read(buf)
+		if err != nil {
+			return
+		}
+		if _, err := dst.Write(buf[:n]); err != nil {
 			return
 		}
 	}
