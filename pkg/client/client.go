@@ -53,6 +53,14 @@ func (c *Client) Start() {
 				return nil
 			},
 			Timeout: 15 * time.Second,
+			HostKeyAlgorithms: []string{
+				ssh.KeyAlgoRSA,
+				ssh.KeyAlgoDSA,
+				ssh.KeyAlgoECDSA256,
+				ssh.KeyAlgoECDSA384,
+				ssh.KeyAlgoECDSA521,
+				ssh.KeyAlgoED25519,
+			},
 		}
 
 		client, err := ssh.Dial("tcp", target, sshConfig)
@@ -64,14 +72,14 @@ func (c *Client) Start() {
 
 		c.sshClient = client
 
+		go c.handleServerChannels(client)
+
 		if err := c.sendClientInfo(client); err != nil {
 			log.Printf("Failed to send client info: %v", err)
 			client.Close()
 			time.Sleep(5 * time.Second)
 			continue
 		}
-
-		go c.handleServerChannels(client)
 
 		go c.sendKeepAlive(client)
 

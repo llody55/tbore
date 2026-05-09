@@ -312,13 +312,18 @@ func (s *Server) handleClientConnection(user net.Conn, sshConn *ssh.ServerConn, 
 	var p uint32
 	fmt.Sscanf(pStr, "%d", &p)
 
+	tunnel := connInfo.Tunnels[actualPort]
+	if tunnel == nil || tunnel.LocalAddr == "" {
+		return
+	}
+
 	payload := struct {
 		Addr       string
 		Port       uint32
 		OriginAddr string
 		OriginPort uint32
 	}{
-		Addr:       connInfo.Tunnels[actualPort].LocalAddr,
+		Addr:       tunnel.LocalAddr,
 		Port:       actualPort,
 		OriginAddr: host,
 		OriginPort: p,
