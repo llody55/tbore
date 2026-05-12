@@ -8,11 +8,12 @@ import (
 )
 
 const (
-	DefaultMinPort     = 1024
-	DefaultMaxPort     = 65535
-	DefaultMaxConns    = 100
-	DefaultMaxTunnels  = 10
-	DefaultControlPort = 7835
+	DefaultMinPort             = 1024
+	DefaultMaxPort             = 65535
+	DefaultMaxConns            = 100
+	DefaultMaxTunnels          = 10
+	DefaultControlPort         = 7835
+	DefaultHealthCheckInterval = 30
 )
 
 type TunnelConfig struct {
@@ -34,13 +35,14 @@ type ServerConfig struct {
 }
 
 type ClientConfig struct {
-	ServerAddr string         `yaml:"server_addr"`
-	ServerPort int            `yaml:"server_port"`
-	Token      string         `yaml:"token"`
-	HostKey    string         `yaml:"host_key"`
-	Project    string         `yaml:"project"`
-	Region     string         `yaml:"region"`
-	Tunnels    []TunnelConfig `yaml:"tunnels"`
+	ServerAddr          string         `yaml:"server_addr"`
+	ServerPort          int            `yaml:"server_port"`
+	Token               string         `yaml:"token"`
+	HostKey             string         `yaml:"host_key"`
+	Project             string         `yaml:"project"`
+	Region              string         `yaml:"region"`
+	Tunnels             []TunnelConfig `yaml:"tunnels"`
+	HealthCheckInterval int            `yaml:"health_check_interval"`
 }
 
 func LoadServerConfig(path string) (*ServerConfig, error) {
@@ -71,7 +73,14 @@ func LoadClientConfig(path string) (*ClientConfig, error) {
 		return nil, err
 	}
 
+	cfg.setDefaults()
 	return &cfg, nil
+}
+
+func (cfg *ClientConfig) setDefaults() {
+	if cfg.HealthCheckInterval <= 0 {
+		cfg.HealthCheckInterval = DefaultHealthCheckInterval
+	}
 }
 
 func (cfg *ServerConfig) setDefaults() {

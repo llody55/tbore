@@ -2,6 +2,9 @@ server_addr: "your_server_ip"
 server_port: 7835
 token: "your_secure_secret_token_here"
 host_key: ""
+project: ""
+region: ""
+health_check_interval: 30
 tunnels:
   - name: "web-service"
     local_ip: "127.0.0.1"

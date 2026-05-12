@@ -66,6 +66,7 @@ token: "your_secure_secret_token"
 host_key: "SHA256:xxxx..."
 project: "your_project"
 region: "your_region"
+health_check_interval: 30
 tunnels:
   - name: "web-service"
     local_ip: "127.0.0.1"
@@ -101,15 +102,16 @@ tunnels:
 
 **客户端配置 (client.yaml)**：
 
-| 配置项          | 类型     | 说明                  |
-| ------------ | ------ | ------------------- |
-| server\_addr | string | 服务端地址               |
-| server\_port | int    | 服务端端口               |
-| token        | string | 认证密钥                |
-| host\_key    | string | 服务端主机密钥指纹（可选）       |
-| project      | string | 项目名称（用于服务端识别和管理）    |
-| region       | string | 地域/数据中心（用于服务端识别和管理） |
-| tunnels      | array  | 隧道配置列表              |
+| 配置项                     | 类型     | 说明                  |
+| ----------------------- | ------ | ------------------- |
+| server\_addr            | string | 服务端地址               |
+| server\_port            | int    | 服务端端口               |
+| token                   | string | 认证密钥                |
+| host\_key               | string | 服务端主机密钥指纹（可选）       |
+| project                 | string | 项目名称（用于服务端识别和管理）    |
+| region                  | string | 地域/数据中心（用于服务端识别和管理） |
+| tunnels                 | array  | 隧道配置列表              |
+| health\_check\_interval | int    | 健康检查间隔（秒）,默认30      |
 
 ### 🏗️ 技术架构
 
@@ -129,6 +131,16 @@ tunnels:
 | 主机密钥验证         | 防止中间人攻击          |
 
 ### 📅 版本更新记录
+
+#### v0.5.4
+
+- **\[NEW]** 新增隧道健康检查机制，客户端定期探测后端服务可用性。
+- **\[NEW]** 新增 `health_check_interval` 配置项（默认30秒），支持自定义健康检查间隔。
+- **\[NEW]** 隧道状态显示优化，支持显示 UP/IDLE/DOWN 三种状态。
+- **\[FIX]** 修复连接计数泄漏问题，使用 defer 确保计数正确递减。
+- **\[FIX]** 修复状态更新不及时问题，后端服务不可用时立即更新状态。
+- **\[IMPROVE]** 优化日志输出，健康状态仅在变化时记录，减少日志噪声。
+- **\[IMPROVE]** 状态显示优化，DOWN 状态不再显示活跃连接数，避免误解。
 
 #### v0.5.3
 

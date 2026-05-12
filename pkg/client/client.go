@@ -82,6 +82,7 @@ func (c *Client) Start() {
 		}
 
 		go c.sendKeepAlive(client)
+		go c.healthCheckLoop(client)
 
 		for _, t := range c.cfg.Tunnels {
 			go c.createTunnel(client, t)
@@ -146,6 +147,51 @@ func (c *Client) sendKeepAlive(client *ssh.Client) {
 			client.Close()
 			return
 		}
+	}
+}
+
+func (c *Client) healthCheckLoop(client *ssh.Client) {
+	t := time.NewTicker(time.Duration(c.cfg.HealthCheckInterval) * time.Second)
+	defer t.Stop()
+
+	log.Printf("Health check started with interval %ds", c.cfg.HealthCheckInterval)
+
+	for range t.C {
+		for _, tunnel := range c.cfg.Tunnels {
+			go c.checkTunnelHealth(client, tunnel)
+		}
+	}
+}
+
+func (c *Client) checkTunnelHealth(client *ssh.Client, tunnel config.TunnelConfig) {
+	addr := fmt.Sprintf("%s:%d", tunnel.LocalIP, tunnel.LocalPort)
+	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+	if err != nil {
+		log.Printf("Health check failed for %s (%s): %v", tunnel.Name, addr, err)
+		c.reportTunnelHealth(client, tunnel.RemotePort, 2)
+		return
+	}
+	conn.Close()
+	c.reportTunnelHealth(client, tunnel.RemotePort, 0)
+}
+
+func (c *Client) reportTunnelHealth(client *ssh.Client, remotePort uint32, status int) {
+	info := struct {
+		Port   uint32 `json:"port"`
+		Status int    `json:"status"`
+	}{
+		Port:   remotePort,
+		Status: status,
+	}
+
+	data, err := json.Marshal(info)
+	if err != nil {
+		log.Printf("Failed to marshal health info: %v", err)
+		return
+	}
+
+	if _, _, err := client.SendRequest("tbore-health-report", true, data); err != nil {
+		log.Printf("Failed to send health report: %v", err)
 	}
 }
 

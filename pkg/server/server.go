@@ -171,6 +171,10 @@ func (s *Server) handleConnection(conn net.Conn, sshConfig *ssh.ServerConfig) {
 				s.handleClientInfoRequest(req, connInfo)
 			case "tbore-tunnel-info":
 				s.handleTunnelInfoRequest(req, connInfo)
+			case "tbore-health-check":
+				s.handleHealthCheckRequest(req, connInfo)
+			case "tbore-health-report":
+				s.handleHealthReportRequest(req, connInfo)
 			case "keepalive@openssh.com":
 				req.Reply(true, nil)
 			default:
@@ -233,6 +237,55 @@ func (s *Server) handleTunnelInfoRequest(req *ssh.Request, connInfo *ConnectionI
 	req.Reply(true, nil)
 }
 
+func (s *Server) handleHealthCheckRequest(req *ssh.Request, connInfo *ConnectionInfo) {
+	var healthInfo []struct {
+		Port   uint32      `json:"port"`
+		Status TunnelState `json:"status"`
+	}
+
+	for port, tunnel := range connInfo.Tunnels {
+		healthInfo = append(healthInfo, struct {
+			Port   uint32      `json:"port"`
+			Status TunnelState `json:"status"`
+		}{
+			Port:   port,
+			Status: tunnel.State,
+		})
+	}
+
+	data, err := json.Marshal(healthInfo)
+	if err != nil {
+		log.Printf("Failed to marshal health info: %v", err)
+		req.Reply(false, nil)
+		return
+	}
+
+	req.Reply(true, data)
+}
+
+func (s *Server) handleHealthReportRequest(req *ssh.Request, connInfo *ConnectionInfo) {
+	var info struct {
+		Port   uint32 `json:"port"`
+		Status int    `json:"status"`
+	}
+
+	if err := json.Unmarshal(req.Payload, &info); err != nil {
+		log.Printf("Failed to parse health report: %v", err)
+		req.Reply(false, nil)
+		return
+	}
+
+	if tunnel, ok := connInfo.Tunnels[info.Port]; ok {
+		newState := TunnelState(info.Status)
+		if tunnel.State != newState {
+			tunnel.State = newState
+			log.Printf("[%s] Tunnel :%d health status changed: %s", connInfo.ID, info.Port, tunnel.State)
+		}
+	}
+
+	req.Reply(true, nil)
+}
+
 func (s *Server) handleForwardRequest(sshConn *ssh.ServerConn, req *ssh.Request, connInfo *ConnectionInfo) {
 	var msg struct {
 		Addr string
@@ -266,7 +319,7 @@ func (s *Server) handleForwardRequest(sshConn *ssh.ServerConn, req *ssh.Request,
 	connInfo.Tunnels[actualPort] = &TunnelInfo{
 		RemotePort:  actualPort,
 		LocalAddr:   msg.Addr,
-		State:       TunnelStateActive,
+		State:       TunnelStateIdle,
 		ActiveConns: 0,
 		Listener:    ln,
 	}
@@ -284,9 +337,6 @@ func (s *Server) acceptClientConnections(ln net.Listener, sshConn *ssh.ServerCon
 	for {
 		uConn, err := ln.Accept()
 		if err != nil {
-			if tunnel, ok := connInfo.Tunnels[actualPort]; ok {
-				tunnel.State = TunnelStateIdle
-			}
 			return
 		}
 
@@ -316,6 +366,9 @@ func (s *Server) handleClientConnection(user net.Conn, sshConn *ssh.ServerConn, 
 	if tunnel == nil || tunnel.LocalAddr == "" {
 		return
 	}
+	defer func() {
+		tunnel.ActiveConns--
+	}()
 
 	payload := struct {
 		Addr       string
@@ -331,6 +384,7 @@ func (s *Server) handleClientConnection(user net.Conn, sshConn *ssh.ServerConn, 
 
 	ch, r, err := sshConn.OpenChannel("forwarded-tcpip", ssh.Marshal(&payload))
 	if err != nil {
+		tunnel.State = TunnelStateError
 		return
 	}
 	go ssh.DiscardRequests(r)
@@ -350,10 +404,6 @@ func (s *Server) handleClientConnection(user net.Conn, sshConn *ssh.ServerConn, 
 		copyBuffer(ch, user, bufB)
 	}()
 	wg.Wait()
-
-	if tunnel, ok := connInfo.Tunnels[actualPort]; ok {
-		tunnel.ActiveConns--
-	}
 }
 
 func copyBuffer(dst, src io.ReadWriter, buf []byte) {
