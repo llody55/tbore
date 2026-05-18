@@ -6,7 +6,10 @@ import (
 	"io"
 	"log"
 	"net"
+	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -15,23 +18,38 @@ import (
 	"tbore/pkg/config"
 )
 
-type Client struct {
-	cfg       *config.ClientConfig
-	auth      *auth.Authenticator
-	sshClient *ssh.Client
+type TunnelHandle struct {
+	Tunnel     config.TunnelConfig
+	Listener   net.Listener
+	ActualPort uint32
+	Active     bool
 }
 
-func NewClient(cfg *config.ClientConfig) (*Client, error) {
+type Client struct {
+	cfg          *config.ClientConfig
+	auth         *auth.Authenticator
+	sshClient    *ssh.Client
+	tunnels      sync.Map
+	tunnelsMutex sync.RWMutex
+	configPath   string
+	reloadChan   chan struct{}
+}
+
+func NewClient(cfg *config.ClientConfig, configPath string) (*Client, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 	return &Client{
-		cfg:  cfg,
-		auth: auth.NewAuthenticator(cfg.Token),
+		cfg:        cfg,
+		auth:       auth.NewAuthenticator(cfg.Token),
+		configPath: configPath,
+		reloadChan: make(chan struct{}, 1),
 	}, nil
 }
 
 func (c *Client) Start() {
+	go c.handleSignals()
+
 	for {
 		target := fmt.Sprintf("%s:%d", c.cfg.ServerAddr, c.cfg.ServerPort)
 		log.Printf("Connecting to %s...", target)
@@ -83,6 +101,7 @@ func (c *Client) Start() {
 
 		go c.sendKeepAlive(client)
 		go c.healthCheckLoop(client)
+		go c.reloadLoop(client)
 
 		for _, t := range c.cfg.Tunnels {
 			go c.createTunnel(client, t)
@@ -92,6 +111,30 @@ func (c *Client) Start() {
 		c.sshClient = nil
 		log.Printf("Connection lost. Reconnecting...")
 		time.Sleep(5 * time.Second)
+	}
+}
+
+func (c *Client) handleSignals() {
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGHUP)
+
+	for range sigChan {
+		log.Println("Received SIGHUP, triggering config reload...")
+		c.TriggerReload()
+	}
+}
+
+func (c *Client) TriggerReload() {
+	select {
+	case c.reloadChan <- struct{}{}:
+	default:
+		log.Println("Reload already in progress")
+	}
+}
+
+func (c *Client) reloadLoop(client *ssh.Client) {
+	for range c.reloadChan {
+		c.ReloadTunnels(client)
 	}
 }
 
@@ -259,6 +302,23 @@ func copyBufferRW(dst io.ReadWriter, src io.ReadWriter, buf []byte) {
 	}
 }
 
+func (c *Client) cancelPortForward(client *ssh.Client, port uint32) {
+	req := struct {
+		Addr string
+		Port uint32
+	}{
+		Addr: "0.0.0.0",
+		Port: port,
+	}
+
+	_, _, err := client.SendRequest("cancel-tcpip-forward", true, ssh.Marshal(req))
+	if err != nil {
+		log.Printf("Failed to cancel port forward for port %d: %v", port, err)
+	} else {
+		log.Printf("Canceled port forward for port %d", port)
+	}
+}
+
 func (c *Client) createTunnel(client *ssh.Client, tunnel config.TunnelConfig) {
 	l, err := client.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", tunnel.RemotePort))
 	if err != nil {
@@ -267,6 +327,15 @@ func (c *Client) createTunnel(client *ssh.Client, tunnel config.TunnelConfig) {
 	}
 
 	actualPort := uint32(l.Addr().(*net.TCPAddr).Port)
+
+	handle := &TunnelHandle{
+		Tunnel:     tunnel,
+		Listener:   l,
+		ActualPort: actualPort,
+		Active:     true,
+	}
+	c.tunnels.Store(tunnel.Name, handle)
+
 	c.sendTunnelInfo(client, tunnel, actualPort)
 
 	log.Printf("SUCCESS [%s]: :%d -> %s:%d", tunnel.Name, actualPort, tunnel.LocalIP, tunnel.LocalPort)
@@ -279,6 +348,103 @@ func (c *Client) createTunnel(client *ssh.Client, tunnel config.TunnelConfig) {
 
 		go c.handleRemoteConnection(remote, tunnel)
 	}
+}
+
+func (c *Client) ReloadTunnels(client *ssh.Client) {
+	log.Println("Starting tunnel reload...")
+
+	newCfg, err := config.LoadClientConfig(c.configPath)
+	if err != nil {
+		log.Printf("Failed to load config: %v", err)
+		return
+	}
+
+	if err := newCfg.Validate(); err != nil {
+		log.Printf("Invalid config: %v", err)
+		return
+	}
+
+	newTunnels := make(map[string]config.TunnelConfig)
+	for _, t := range newCfg.Tunnels {
+		newTunnels[t.Name] = t
+	}
+
+	c.tunnelsMutex.Lock()
+
+	c.tunnels.Range(func(key, value interface{}) bool {
+		name := key.(string)
+		handle := value.(*TunnelHandle)
+
+		newTunnel, exists := newTunnels[name]
+		if !exists {
+			log.Printf("Removing tunnel [%s]", name)
+			handle.Active = false
+			c.cancelPortForward(client, handle.ActualPort)
+			handle.Listener.Close()
+			c.tunnels.Delete(name)
+		} else {
+			if handle.Tunnel.LocalIP != newTunnel.LocalIP ||
+				handle.Tunnel.LocalPort != newTunnel.LocalPort ||
+				handle.Tunnel.RemotePort != newTunnel.RemotePort {
+				log.Printf("Updating tunnel [%s]: %s:%d -> :%d", name, newTunnel.LocalIP, newTunnel.LocalPort, newTunnel.RemotePort)
+				handle.Active = false
+				c.cancelPortForward(client, handle.ActualPort)
+				handle.Listener.Close()
+				c.tunnels.Delete(name)
+			} else {
+				delete(newTunnels, name)
+			}
+		}
+		return true
+	})
+
+	for name, tunnel := range newTunnels {
+		log.Printf("Adding tunnel [%s]: %s:%d -> :%d", name, tunnel.LocalIP, tunnel.LocalPort, tunnel.RemotePort)
+		go c.createTunnel(client, tunnel)
+	}
+
+	c.cfg = newCfg
+
+	c.tunnelsMutex.Unlock()
+
+	log.Println("Tunnel reload completed")
+}
+
+func (c *Client) GetTunnelStatus() []struct {
+	Name       string
+	LocalIP    string
+	LocalPort  int
+	RemotePort uint32
+	Active     bool
+} {
+	var status []struct {
+		Name       string
+		LocalIP    string
+		LocalPort  int
+		RemotePort uint32
+		Active     bool
+	}
+
+	c.tunnels.Range(func(key, value interface{}) bool {
+		name := key.(string)
+		handle := value.(*TunnelHandle)
+		status = append(status, struct {
+			Name       string
+			LocalIP    string
+			LocalPort  int
+			RemotePort uint32
+			Active     bool
+		}{
+			Name:       name,
+			LocalIP:    handle.Tunnel.LocalIP,
+			LocalPort:  handle.Tunnel.LocalPort,
+			RemotePort: handle.ActualPort,
+			Active:     handle.Active,
+		})
+		return true
+	})
+
+	return status
 }
 
 func (c *Client) handleRemoteConnection(remote net.Conn, tunnel config.TunnelConfig) {

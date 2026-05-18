@@ -167,6 +167,8 @@ func (s *Server) handleConnection(conn net.Conn, sshConfig *ssh.ServerConfig) {
 			switch req.Type {
 			case "tcpip-forward":
 				s.handleForwardRequest(sshConn, req, connInfo)
+			case "cancel-tcpip-forward":
+				s.handleCancelForwardRequest(req, connInfo)
 			case "tbore-client-info":
 				s.handleClientInfoRequest(req, connInfo)
 			case "tbore-tunnel-info":
@@ -283,6 +285,29 @@ func (s *Server) handleHealthReportRequest(req *ssh.Request, connInfo *Connectio
 		}
 	}
 
+	req.Reply(true, nil)
+}
+
+func (s *Server) handleCancelForwardRequest(req *ssh.Request, connInfo *ConnectionInfo) {
+	var msg struct {
+		Addr string
+		Port uint32
+	}
+	ssh.Unmarshal(req.Payload, &msg)
+
+	tunnel, ok := connInfo.Tunnels[msg.Port]
+	if !ok {
+		log.Printf("[%s] Cancel forward failed: tunnel :%d not found", connInfo.ID, msg.Port)
+		req.Reply(false, nil)
+		return
+	}
+
+	if tunnel.Listener != nil {
+		tunnel.Listener.Close()
+	}
+
+	delete(connInfo.Tunnels, msg.Port)
+	log.Printf("[%s] Tunnel canceled: :%d", connInfo.ID, msg.Port)
 	req.Reply(true, nil)
 }
 
