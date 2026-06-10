@@ -261,12 +261,10 @@ func (c *Client) handleServerChannels(client *ssh.Client) {
 			local.Close()
 			continue
 		}
+		defer ch.Close()
 		go ssh.DiscardRequests(reqs)
 
 		go func(ch ssh.Channel, local net.Conn) {
-			defer ch.Close()
-			defer local.Close()
-
 			if tcpConn, ok := local.(*net.TCPConn); ok {
 				tcpConn.SetNoDelay(true)
 			}
@@ -280,12 +278,17 @@ func (c *Client) handleServerChannels(client *ssh.Client) {
 			go func() {
 				defer wg.Done()
 				copyBufferRW(local, ch, bufA)
+				ch.CloseWrite()
 			}()
 			go func() {
 				defer wg.Done()
 				copyBufferRW(ch, local, bufB)
+				local.Close()
 			}()
 			wg.Wait()
+
+			ch.Close()
+			local.Close()
 		}(ch, local)
 	}
 }

@@ -140,6 +140,7 @@ func (s *Server) Start() error {
 
 func (s *Server) handleConnection(conn net.Conn, sshConfig *ssh.ServerConfig) {
 	defer s.sem.Release(1)
+	defer conn.Close()
 
 	remoteAddr := conn.RemoteAddr().String()
 
@@ -381,14 +382,13 @@ func (s *Server) acceptClientConnections(ln net.Listener, sshConn *ssh.ServerCon
 }
 
 func (s *Server) handleClientConnection(user net.Conn, sshConn *ssh.ServerConn, actualPort uint32, connInfo *ConnectionInfo) {
-	defer user.Close()
-
 	host, pStr, _ := net.SplitHostPort(user.RemoteAddr().String())
 	var p uint32
 	fmt.Sscanf(pStr, "%d", &p)
 
 	tunnel := connInfo.Tunnels[actualPort]
 	if tunnel == nil || tunnel.LocalAddr == "" {
+		user.Close()
 		return
 	}
 	defer func() {
@@ -410,6 +410,7 @@ func (s *Server) handleClientConnection(user net.Conn, sshConn *ssh.ServerConn, 
 	ch, r, err := sshConn.OpenChannel("forwarded-tcpip", ssh.Marshal(&payload))
 	if err != nil {
 		tunnel.State = TunnelStateError
+		user.Close()
 		return
 	}
 	go ssh.DiscardRequests(r)
@@ -423,12 +424,17 @@ func (s *Server) handleClientConnection(user net.Conn, sshConn *ssh.ServerConn, 
 	go func() {
 		defer wg.Done()
 		copyBuffer(user, ch, bufA)
+		ch.CloseWrite()
 	}()
 	go func() {
 		defer wg.Done()
 		copyBuffer(ch, user, bufB)
+		user.Close()
 	}()
 	wg.Wait()
+
+	ch.Close()
+	user.Close()
 }
 
 func copyBuffer(dst, src io.ReadWriter, buf []byte) {
@@ -441,6 +447,24 @@ func copyBuffer(dst, src io.ReadWriter, buf []byte) {
 			return
 		}
 	}
+}
+
+func bidirectionalCopy(a, b io.ReadWriter) {
+	bufA := make([]byte, 128*1024)
+	bufB := make([]byte, 128*1024)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		copyBuffer(a, b, bufA)
+	}()
+	go func() {
+		defer wg.Done()
+		copyBuffer(b, a, bufB)
+	}()
+	wg.Wait()
 }
 
 func (s *Server) GetStatus() ServerStatus {
