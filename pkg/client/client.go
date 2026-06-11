@@ -18,6 +18,14 @@ import (
 	"tbore/pkg/config"
 )
 
+const bufferSize = 128 * 1024
+
+var bufferPool = sync.Pool{
+	New: func() interface{} {
+		return make([]byte, bufferSize)
+	},
+}
+
 type TunnelHandle struct {
 	Tunnel     config.TunnelConfig
 	Listener   net.Listener
@@ -269,8 +277,10 @@ func (c *Client) handleServerChannels(client *ssh.Client) {
 				tcpConn.SetNoDelay(true)
 			}
 
-			bufA := make([]byte, 128*1024)
-			bufB := make([]byte, 128*1024)
+			bufA := bufferPool.Get().([]byte)
+			bufB := bufferPool.Get().([]byte)
+			defer bufferPool.Put(bufA)
+			defer bufferPool.Put(bufB)
 
 			var wg sync.WaitGroup
 			wg.Add(2)
@@ -464,8 +474,10 @@ func (c *Client) handleRemoteConnection(remote net.Conn, tunnel config.TunnelCon
 		tcpConn.SetNoDelay(true)
 	}
 
-	bufA := make([]byte, 128*1024)
-	bufB := make([]byte, 128*1024)
+	bufA := bufferPool.Get().([]byte)
+	bufB := bufferPool.Get().([]byte)
+	defer bufferPool.Put(bufA)
+	defer bufferPool.Put(bufB)
 
 	var wg sync.WaitGroup
 	wg.Add(2)

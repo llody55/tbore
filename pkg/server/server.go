@@ -61,6 +61,14 @@ type ConnectionInfo struct {
 	ClientInfo  ClientInfo
 }
 
+const bufferSize = 128 * 1024
+
+var bufferPool = sync.Pool{
+	New: func() interface{} {
+		return make([]byte, bufferSize)
+	},
+}
+
 type Server struct {
 	cfg           *config.ServerConfig
 	auth          *auth.Authenticator
@@ -388,12 +396,13 @@ func (s *Server) handleClientConnection(user net.Conn, sshConn *ssh.ServerConn, 
 
 	tunnel := connInfo.Tunnels[actualPort]
 	if tunnel == nil || tunnel.LocalAddr == "" {
+		tunnel, _ = connInfo.Tunnels[actualPort]
+		if tunnel != nil {
+			tunnel.ActiveConns--
+		}
 		user.Close()
 		return
 	}
-	defer func() {
-		tunnel.ActiveConns--
-	}()
 
 	payload := struct {
 		Addr       string
@@ -410,13 +419,16 @@ func (s *Server) handleClientConnection(user net.Conn, sshConn *ssh.ServerConn, 
 	ch, r, err := sshConn.OpenChannel("forwarded-tcpip", ssh.Marshal(&payload))
 	if err != nil {
 		tunnel.State = TunnelStateError
+		tunnel.ActiveConns--
 		user.Close()
 		return
 	}
 	go ssh.DiscardRequests(r)
 
-	bufA := make([]byte, 128*1024)
-	bufB := make([]byte, 128*1024)
+	bufA := bufferPool.Get().([]byte)
+	bufB := bufferPool.Get().([]byte)
+	defer bufferPool.Put(bufA)
+	defer bufferPool.Put(bufB)
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -433,6 +445,7 @@ func (s *Server) handleClientConnection(user net.Conn, sshConn *ssh.ServerConn, 
 	}()
 	wg.Wait()
 
+	tunnel.ActiveConns--
 	ch.Close()
 	user.Close()
 }
