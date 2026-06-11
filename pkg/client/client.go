@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -170,11 +171,13 @@ func (c *Client) sendTunnelInfo(client *ssh.Client, tunnel config.TunnelConfig, 
 		Name      string `json:"name"`
 		LocalIP   string `json:"local_ip"`
 		LocalPort int    `json:"local_port"`
+		Timeout   int    `json:"timeout"`
 	}{
 		Port:      actualPort,
 		Name:      tunnel.Name,
 		LocalIP:   tunnel.LocalIP,
 		LocalPort: tunnel.LocalPort,
+		Timeout:   tunnel.Timeout,
 	}
 
 	data, err := json.Marshal(info)
@@ -269,37 +272,52 @@ func (c *Client) handleServerChannels(client *ssh.Client) {
 			local.Close()
 			continue
 		}
-		defer ch.Close()
-		go ssh.DiscardRequests(reqs)
 
-		go func(ch ssh.Channel, local net.Conn) {
+		ctx, cancel := context.WithCancel(context.Background())
+
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+					req, ok := <-reqs
+					if !ok {
+						return
+					}
+					req.Reply(false, nil)
+				}
+			}
+		}()
+
+		go func(ch ssh.Channel, local net.Conn, cancel context.CancelFunc) {
+			defer cancel()
+			defer ch.Close()
 			if tcpConn, ok := local.(*net.TCPConn); ok {
 				tcpConn.SetNoDelay(true)
 			}
 
 			bufA := bufferPool.Get().([]byte)
 			bufB := bufferPool.Get().([]byte)
-			defer bufferPool.Put(bufA)
-			defer bufferPool.Put(bufB)
 
 			var wg sync.WaitGroup
 			wg.Add(2)
 
 			go func() {
 				defer wg.Done()
+				defer bufferPool.Put(bufA)
 				copyBufferRW(local, ch, bufA)
 				ch.CloseWrite()
 			}()
 			go func() {
 				defer wg.Done()
+				defer bufferPool.Put(bufB)
 				copyBufferRW(ch, local, bufB)
-				local.Close()
 			}()
 			wg.Wait()
 
-			ch.Close()
 			local.Close()
-		}(ch, local)
+		}(ch, local, cancel)
 	}
 }
 
@@ -476,18 +494,18 @@ func (c *Client) handleRemoteConnection(remote net.Conn, tunnel config.TunnelCon
 
 	bufA := bufferPool.Get().([]byte)
 	bufB := bufferPool.Get().([]byte)
-	defer bufferPool.Put(bufA)
-	defer bufferPool.Put(bufB)
 
 	var wg sync.WaitGroup
 	wg.Add(2)
 
 	go func() {
 		defer wg.Done()
+		defer bufferPool.Put(bufA)
 		copyBuffer(local, remote, bufA)
 	}()
 	go func() {
 		defer wg.Done()
+		defer bufferPool.Put(bufB)
 		copyBuffer(remote, local, bufB)
 	}()
 	wg.Wait()

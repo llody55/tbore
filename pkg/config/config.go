@@ -21,6 +21,7 @@ type TunnelConfig struct {
 	LocalIP    string `yaml:"local_ip"`
 	LocalPort  int    `yaml:"local_port"`
 	RemotePort uint32 `yaml:"remote_port"`
+	Timeout    int    `yaml:"timeout"`
 }
 
 type ServerConfig struct {

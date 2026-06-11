@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"log"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -46,6 +48,7 @@ type TunnelInfo struct {
 	ActiveConns int32
 	Name        string
 	Listener    net.Listener
+	ConnTimeout time.Duration
 }
 
 type ClientInfo struct {
@@ -62,11 +65,45 @@ type ConnectionInfo struct {
 }
 
 const bufferSize = 128 * 1024
+const defaultConnTimeout = 300 * time.Second
 
-var bufferPool = sync.Pool{
-	New: func() interface{} {
+var (
+	bufferPool = sync.Pool{
+		New: func() interface{} {
+			return make([]byte, bufferSize)
+		},
+	}
+	poolGetCount   int64
+	poolPutCount   int64
+	poolAllocCount int64
+	poolMu         sync.Mutex
+)
+
+func getBuffer() []byte {
+	buf := bufferPool.Get().([]byte)
+	if buf == nil {
+		poolMu.Lock()
+		poolAllocCount++
+		poolMu.Unlock()
 		return make([]byte, bufferSize)
-	},
+	}
+	poolMu.Lock()
+	poolGetCount++
+	poolMu.Unlock()
+	return buf
+}
+
+func putBuffer(buf []byte) {
+	poolMu.Lock()
+	poolPutCount++
+	poolMu.Unlock()
+	bufferPool.Put(buf)
+}
+
+func getPoolStats() (get, put, alloc int64) {
+	poolMu.Lock()
+	defer poolMu.Unlock()
+	return poolGetCount, poolPutCount, poolAllocCount
 }
 
 type Server struct {
@@ -233,6 +270,7 @@ func (s *Server) handleTunnelInfoRequest(req *ssh.Request, connInfo *ConnectionI
 		Name      string `json:"name"`
 		LocalIP   string `json:"local_ip"`
 		LocalPort int    `json:"local_port"`
+		Timeout   int    `json:"timeout"`
 	}
 	if err := json.Unmarshal(req.Payload, &info); err != nil {
 		log.Printf("Failed to parse tunnel info: %v", err)
@@ -243,6 +281,7 @@ func (s *Server) handleTunnelInfoRequest(req *ssh.Request, connInfo *ConnectionI
 	if tunnel, ok := connInfo.Tunnels[info.Port]; ok {
 		tunnel.Name = info.Name
 		tunnel.LocalAddr = fmt.Sprintf("%s:%d", info.LocalIP, info.LocalPort)
+		tunnel.ConnTimeout = time.Duration(info.Timeout) * time.Second
 	}
 
 	req.Reply(true, nil)
@@ -390,17 +429,17 @@ func (s *Server) acceptClientConnections(ln net.Listener, sshConn *ssh.ServerCon
 }
 
 func (s *Server) handleClientConnection(user net.Conn, sshConn *ssh.ServerConn, actualPort uint32, connInfo *ConnectionInfo) {
+	defer user.Close()
+
 	host, pStr, _ := net.SplitHostPort(user.RemoteAddr().String())
 	var p uint32
 	fmt.Sscanf(pStr, "%d", &p)
 
 	tunnel := connInfo.Tunnels[actualPort]
 	if tunnel == nil || tunnel.LocalAddr == "" {
-		tunnel, _ = connInfo.Tunnels[actualPort]
-		if tunnel != nil {
-			tunnel.ActiveConns--
+		if t, ok := connInfo.Tunnels[actualPort]; ok {
+			t.ActiveConns--
 		}
-		user.Close()
 		return
 	}
 
@@ -420,34 +459,78 @@ func (s *Server) handleClientConnection(user net.Conn, sshConn *ssh.ServerConn, 
 	if err != nil {
 		tunnel.State = TunnelStateError
 		tunnel.ActiveConns--
-		user.Close()
 		return
 	}
-	go ssh.DiscardRequests(r)
 
-	bufA := bufferPool.Get().([]byte)
-	bufB := bufferPool.Get().([]byte)
-	defer bufferPool.Put(bufA)
-	defer bufferPool.Put(bufB)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	defer ch.Close()
+
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				req, ok := <-r
+				if !ok {
+					return
+				}
+				req.Reply(false, nil)
+			}
+		}
+	}()
+
+	bufA := getBuffer()
+	bufB := getBuffer()
 
 	var wg sync.WaitGroup
 	wg.Add(2)
 
+	timeout := tunnel.ConnTimeout
+	if timeout < 0 {
+		timeout = defaultConnTimeout
+	}
+
+	var lastActivityTime int64 = time.Now().Unix()
+
 	go func() {
 		defer wg.Done()
-		copyBuffer(user, ch, bufA)
+		defer putBuffer(bufA)
+		copyBufferWithTimestamp(user, ch, bufA, &lastActivityTime)
 		ch.CloseWrite()
 	}()
 	go func() {
 		defer wg.Done()
-		copyBuffer(ch, user, bufB)
-		user.Close()
+		defer putBuffer(bufB)
+		copyBufferWithTimestamp(ch, user, bufB, &lastActivityTime)
 	}()
+
+	if timeout > 0 {
+		go func() {
+			ticker := time.NewTicker(time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					if time.Now().Unix()-atomic.LoadInt64(&lastActivityTime) >= int64(timeout.Seconds()) {
+						log.Printf("[%s] Connection timeout after %d seconds of inactivity", connInfo.ID, timeout.Seconds())
+						cancel()
+						ch.Close()
+						user.Close()
+						return
+					}
+				}
+			}
+		}()
+	}
+
 	wg.Wait()
 
 	tunnel.ActiveConns--
-	ch.Close()
-	user.Close()
+	log.Printf("[%s] Connection closed, active conns: %d", connInfo.ID, tunnel.ActiveConns)
 }
 
 func copyBuffer(dst, src io.ReadWriter, buf []byte) {
@@ -462,19 +545,34 @@ func copyBuffer(dst, src io.ReadWriter, buf []byte) {
 	}
 }
 
+func copyBufferWithTimestamp(dst, src io.ReadWriter, buf []byte, lastActivityTime *int64) {
+	for {
+		n, err := src.Read(buf)
+		if err != nil {
+			return
+		}
+		atomic.StoreInt64(lastActivityTime, time.Now().Unix())
+		if _, err := dst.Write(buf[:n]); err != nil {
+			return
+		}
+	}
+}
+
 func bidirectionalCopy(a, b io.ReadWriter) {
-	bufA := make([]byte, 128*1024)
-	bufB := make([]byte, 128*1024)
+	bufA := getBuffer()
+	bufB := getBuffer()
 
 	var wg sync.WaitGroup
 	wg.Add(2)
 
 	go func() {
 		defer wg.Done()
+		defer putBuffer(bufA)
 		copyBuffer(a, b, bufA)
 	}()
 	go func() {
 		defer wg.Done()
+		defer putBuffer(bufB)
 		copyBuffer(b, a, bufB)
 	}()
 	wg.Wait()
