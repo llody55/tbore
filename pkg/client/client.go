@@ -416,7 +416,8 @@ func (c *Client) ReloadTunnels(client *ssh.Client) {
 		} else {
 			if handle.Tunnel.LocalIP != newTunnel.LocalIP ||
 				handle.Tunnel.LocalPort != newTunnel.LocalPort ||
-				handle.Tunnel.RemotePort != newTunnel.RemotePort {
+				handle.Tunnel.RemotePort != newTunnel.RemotePort ||
+				handle.Tunnel.Timeout != newTunnel.Timeout {
 				log.Printf("Updating tunnel [%s]: %s:%d -> :%d", name, newTunnel.LocalIP, newTunnel.LocalPort, newTunnel.RemotePort)
 				handle.Active = false
 				c.cancelPortForward(client, handle.ActualPort)
