@@ -108,15 +108,20 @@ func (c *Client) Start() {
 			continue
 		}
 
-		go c.sendKeepAlive(client)
-		go c.healthCheckLoop(client)
-		go c.reloadLoop(client)
+		// 为本轮连接派生一个 ctx，连接断开时取消，让所有辅助 goroutine 退出
+		connCtx, connCancel := context.WithCancel(context.Background())
+		c.sshClient = client
+
+		go c.sendKeepAlive(connCtx, client)
+		go c.healthCheckLoop(connCtx, client)
+		go c.reloadLoop(connCtx, client)
 
 		for _, t := range c.cfg.Tunnels {
 			go c.createTunnel(client, t)
 		}
 
 		client.Wait()
+		connCancel() // 通知所有依赖本轮连接的 goroutine 退出，避免往死连接刷日志/泄漏
 		c.sshClient = nil
 		log.Printf("Connection lost. Reconnecting...")
 		time.Sleep(5 * time.Second)
@@ -141,9 +146,14 @@ func (c *Client) TriggerReload() {
 	}
 }
 
-func (c *Client) reloadLoop(client *ssh.Client) {
-	for range c.reloadChan {
-		c.ReloadTunnels(client)
+func (c *Client) reloadLoop(ctx context.Context, client *ssh.Client) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-c.reloadChan:
+			c.ReloadTunnels(client)
+		}
 	}
 }
 
@@ -188,31 +198,44 @@ func (c *Client) sendTunnelInfo(client *ssh.Client, tunnel config.TunnelConfig, 
 
 	_, _, err = client.SendRequest("tbore-tunnel-info", true, data)
 	if err != nil {
-		log.Printf("Failed to send tunnel info: %v", err)
-	}
-}
-
-func (c *Client) sendKeepAlive(client *ssh.Client) {
-	t := time.NewTicker(20 * time.Second)
-	defer t.Stop()
-
-	for range t.C {
-		if _, _, err := client.SendRequest("keepalive@openssh.com", true, nil); err != nil {
-			client.Close()
-			return
+		// 连接已断属于预期情况，不再记录避免日志刷屏
+		if err != io.EOF {
+			log.Printf("Failed to send tunnel info: %v", err)
 		}
 	}
 }
 
-func (c *Client) healthCheckLoop(client *ssh.Client) {
+func (c *Client) sendKeepAlive(ctx context.Context, client *ssh.Client) {
+	t := time.NewTicker(20 * time.Second)
+	defer t.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if _, _, err := client.SendRequest("keepalive@openssh.com", true, nil); err != nil {
+				client.Close()
+				return
+			}
+		}
+	}
+}
+
+func (c *Client) healthCheckLoop(ctx context.Context, client *ssh.Client) {
 	t := time.NewTicker(time.Duration(c.cfg.HealthCheckInterval) * time.Second)
 	defer t.Stop()
 
 	log.Printf("Health check started with interval %ds", c.cfg.HealthCheckInterval)
 
-	for range t.C {
-		for _, tunnel := range c.cfg.Tunnels {
-			go c.checkTunnelHealth(client, tunnel)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			for _, tunnel := range c.cfg.Tunnels {
+				go c.checkTunnelHealth(client, tunnel)
+			}
 		}
 	}
 }
@@ -245,7 +268,10 @@ func (c *Client) reportTunnelHealth(client *ssh.Client, remotePort uint32, statu
 	}
 
 	if _, _, err := client.SendRequest("tbore-health-report", true, data); err != nil {
-		log.Printf("Failed to send health report: %v", err)
+		// 连接已断属于预期情况（主循环会重连），不再记录避免日志刷屏
+		if err != io.EOF {
+			log.Printf("Failed to send health report: %v", err)
+		}
 	}
 }
 

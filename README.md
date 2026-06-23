@@ -139,6 +139,11 @@ tunnels:
 
 ### 📅 版本更新记录
 
+#### v0.6.6
+
+- **\[FIX]** 修复连接断开后客户端辅助 goroutine 泄漏问题：`healthCheckLoop` / `sendKeepAlive` / `reloadLoop` 之前在 SSH 控制连接失效后仍持续往死连接发送请求，导致出现大量 `Failed to send health report: EOF` 刷屏日志。现引入每连接的 `context.Context`，连接断开时统一取消，所有辅助 goroutine 立即退出。
+- **\[IMPROVE]** 对 `sendTunnelInfo` / `reportTunnelHealth` 等一次性请求，连接已断（`io.EOF`）时不再记录日志，避免重连风暴期日志噪声。
+
 #### v0.6.5
 
 - **\[CRITICAL FIX]** 修复半关闭（half-close）不对称传播问题：短连接（HTTP/1.0、后端 `Connection: close`、SSH 退出等）任一端 close 后，隧道如今可秒级回收 FD 与缓冲，不再依赖空闲超时兜底。
