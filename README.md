@@ -39,6 +39,7 @@ min_port: 1024
 max_port: 65535
 max_connections: 100
 max_tunnels_per_client: 10
+max_conns_per_tunnel: 100
 bind_addr: "0.0.0.0"
 host_key_path: "./host_key"
 ```
@@ -52,7 +53,7 @@ host_key_path: "./host_key"
 服务端启动后会显示主机密钥指纹：
 
 ```
-tbore server v0.4.0 started on 0.0.0.0:7835
+tbore server v0.6.5 started on 0.0.0.0:7835
 Host key fingerprint: SHA256:xxxx...
 ```
 
@@ -100,6 +101,7 @@ tunnels:
 | max\_port                 | uint32 | 65535   | 最大允许绑定端口   |
 | max\_connections          | int    | 100     | 最大并发连接数    |
 | max\_tunnels\_per\_client | int    | 10      | 每个客户端最大隧道数 |
+| max\_conns\_per\_tunnel   | int    | 100     | 单条隧道最大并发连接数 |
 | bind\_addr                | string | 0.0.0.0 | 绑定地址       |
 | host\_key\_path           | string | -       | 主机密钥存储路径   |
 
@@ -131,10 +133,18 @@ tunnels:
 | HMAC-SHA256 认证 | 防暴力破解、防重放攻击      |
 | 端口范围限制         | 防止绑定特权端口（1-1023） |
 | 连接数限制          | 防止 DoS 攻击        |
+| 单隧道并发限制      | 防止单条隧道被突发连接打爆  |
 | 隧道数限制          | 防止端口耗尽           |
 | 主机密钥验证         | 防止中间人攻击          |
 
 ### 📅 版本更新记录
+
+#### v0.6.5
+
+- **\[CRITICAL FIX]** 修复半关闭（half-close）不对称传播问题：短连接（HTTP/1.0、后端 `Connection: close`、SSH 退出等）任一端 close 后，隧道如今可秒级回收 FD 与缓冲，不再依赖空闲超时兜底。
+- **\[SECURITY]** 新增单隧道并发连接上限 `max_conns_per_tunnel`，超出即拒绝，防止单条隧道被突发短连接打爆 server 的 FD / 内存。
+- **\[FIX]** 修复 `handleClientConnection` 中活跃连接计数递减不完整的问题，统一由 defer 释放信号量与计数。
+- **\[FIX]** 修复日志格式化 `%d` 与 `float64` 类型不匹配的告警。
 
 #### v0.6.4
 

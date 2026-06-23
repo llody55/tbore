@@ -14,6 +14,8 @@ const (
 	DefaultMaxTunnels          = 10
 	DefaultControlPort         = 7835
 	DefaultHealthCheckInterval = 30
+	// DefaultMaxConnsPerTunnel 为 0 表示跟随 MaxConnections，不单独限制
+	DefaultMaxConnsPerTunnel = 0
 )
 
 type TunnelConfig struct {
@@ -25,14 +27,15 @@ type TunnelConfig struct {
 }
 
 type ServerConfig struct {
-	Port           int    `yaml:"port"`
-	Token          string `yaml:"token"`
-	MinPort        uint32 `yaml:"min_port"`
-	MaxPort        uint32 `yaml:"max_port"`
-	MaxConnections int    `yaml:"max_connections"`
-	MaxTunnels     int    `yaml:"max_tunnels_per_client"`
-	BindAddr       string `yaml:"bind_addr"`
-	HostKeyPath    string `yaml:"host_key_path"`
+	Port              int    `yaml:"port"`
+	Token             string `yaml:"token"`
+	MinPort           uint32 `yaml:"min_port"`
+	MaxPort           uint32 `yaml:"max_port"`
+	MaxConnections    int    `yaml:"max_connections"`
+	MaxTunnels        int    `yaml:"max_tunnels_per_client"`
+	BindAddr          string `yaml:"bind_addr"`
+	HostKeyPath       string `yaml:"host_key_path"`
+	MaxConnsPerTunnel int    `yaml:"max_conns_per_tunnel"`
 }
 
 type ClientConfig struct {
@@ -99,6 +102,10 @@ func (cfg *ServerConfig) setDefaults() {
 	}
 	if cfg.MaxTunnels == 0 {
 		cfg.MaxTunnels = DefaultMaxTunnels
+	}
+	if cfg.MaxConnsPerTunnel == 0 {
+		// 未显式配置时，与全局 MaxConnections 保持一致，防止单条隧道独占全部 FD
+		cfg.MaxConnsPerTunnel = cfg.MaxConnections
 	}
 	if cfg.BindAddr == "" {
 		cfg.BindAddr = "0.0.0.0"

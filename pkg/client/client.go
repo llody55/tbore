@@ -307,12 +307,17 @@ func (c *Client) handleServerChannels(client *ssh.Client) {
 				defer wg.Done()
 				defer bufferPool.Put(bufA)
 				copyBufferRW(local, ch, bufA)
-				ch.CloseWrite()
+				// ch EOF = server/browser 已结束请求，把 EOF 正向转发给本地后端
+				if tc, ok := local.(*net.TCPConn); ok {
+					tc.CloseWrite()
+				}
 			}()
 			go func() {
 				defer wg.Done()
 				defer bufferPool.Put(bufB)
 				copyBufferRW(ch, local, bufB)
+				// local EOF = 本地后端已结束响应，把 EOF 正向转发给 server
+				ch.CloseWrite()
 			}()
 			wg.Wait()
 
@@ -503,11 +508,19 @@ func (c *Client) handleRemoteConnection(remote net.Conn, tunnel config.TunnelCon
 		defer wg.Done()
 		defer bufferPool.Put(bufA)
 		copyBuffer(local, remote, bufA)
+		// remote EOF = browser/server 已结束请求，把 EOF 正向转发给本地后端
+		if tc, ok := local.(*net.TCPConn); ok {
+			tc.CloseWrite()
+		}
 	}()
 	go func() {
 		defer wg.Done()
 		defer bufferPool.Put(bufB)
 		copyBuffer(remote, local, bufB)
+		// local EOF = 本地后端已结束响应，把 EOF 正向转发给 server
+		if cw, ok := remote.(interface{ CloseWrite() error }); ok {
+			cw.CloseWrite()
+		}
 	}()
 	wg.Wait()
 }

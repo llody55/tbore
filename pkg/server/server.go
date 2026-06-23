@@ -49,6 +49,8 @@ type TunnelInfo struct {
 	Name        string
 	Listener    net.Listener
 	ConnTimeout time.Duration
+	// connSem 控制该隧道同时处理的转发连接数，超出即拒绝，防止单隧道被打爆
+	connSem *semaphore.Weighted
 }
 
 type ClientInfo struct {
@@ -395,6 +397,7 @@ func (s *Server) handleForwardRequest(sshConn *ssh.ServerConn, req *ssh.Request,
 		State:       TunnelStateIdle,
 		ActiveConns: 0,
 		Listener:    ln,
+		connSem:     semaphore.NewWeighted(int64(s.cfg.MaxConnsPerTunnel)),
 	}
 
 	resp := make([]byte, 4)
@@ -413,10 +416,22 @@ func (s *Server) acceptClientConnections(ln net.Listener, sshConn *ssh.ServerCon
 			return
 		}
 
-		if tunnel, ok := connInfo.Tunnels[actualPort]; ok {
-			tunnel.State = TunnelStateActive
-			tunnel.ActiveConns++
+		tunnel, ok := connInfo.Tunnels[actualPort]
+		if !ok {
+			uConn.Close()
+			return
 		}
+
+		// 单隧道并发准入控制：超限直接拒绝，防止爆炸式连接打爆 FD/内存
+		if tunnel.connSem != nil && !tunnel.connSem.TryAcquire(1) {
+			log.Printf("[%s] Tunnel :%d concurrent connection limit reached, rejected (max: %d)",
+				connInfo.ID, actualPort, s.cfg.MaxConnsPerTunnel)
+			uConn.Close()
+			continue
+		}
+
+		tunnel.State = TunnelStateActive
+		tunnel.ActiveConns++
 
 		if tcpConn, ok := uConn.(*net.TCPConn); ok {
 			tcpConn.SetNoDelay(true)
@@ -431,15 +446,22 @@ func (s *Server) acceptClientConnections(ln net.Listener, sshConn *ssh.ServerCon
 func (s *Server) handleClientConnection(user net.Conn, sshConn *ssh.ServerConn, actualPort uint32, connInfo *ConnectionInfo) {
 	defer user.Close()
 
+	// 无论走哪条返回路径，都释放单隧道并发信号量与活跃计数
+	tunnel := connInfo.Tunnels[actualPort]
+	defer func() {
+		if tunnel != nil {
+			if tunnel.connSem != nil {
+				tunnel.connSem.Release(1)
+			}
+			tunnel.ActiveConns--
+		}
+	}()
+
 	host, pStr, _ := net.SplitHostPort(user.RemoteAddr().String())
 	var p uint32
 	fmt.Sscanf(pStr, "%d", &p)
 
-	tunnel := connInfo.Tunnels[actualPort]
 	if tunnel == nil || tunnel.LocalAddr == "" {
-		if t, ok := connInfo.Tunnels[actualPort]; ok {
-			t.ActiveConns--
-		}
 		return
 	}
 
@@ -458,7 +480,6 @@ func (s *Server) handleClientConnection(user net.Conn, sshConn *ssh.ServerConn, 
 	ch, r, err := sshConn.OpenChannel("forwarded-tcpip", ssh.Marshal(&payload))
 	if err != nil {
 		tunnel.State = TunnelStateError
-		tunnel.ActiveConns--
 		return
 	}
 
@@ -498,12 +519,17 @@ func (s *Server) handleClientConnection(user net.Conn, sshConn *ssh.ServerConn, 
 		defer wg.Done()
 		defer putBuffer(bufA)
 		copyBufferWithTimestamp(user, ch, bufA, &lastActivityTime)
-		ch.CloseWrite()
+		// ch EOF = client/backend 已结束响应，把 EOF 正向转发给最终用户
+		if tc, ok := user.(*net.TCPConn); ok {
+			tc.CloseWrite()
+		}
 	}()
 	go func() {
 		defer wg.Done()
 		defer putBuffer(bufB)
 		copyBufferWithTimestamp(ch, user, bufB, &lastActivityTime)
+		// user EOF = 最终用户关闭，把 EOF 正向转发给 client
+		ch.CloseWrite()
 	}()
 
 	if timeout > 0 {
@@ -516,7 +542,7 @@ func (s *Server) handleClientConnection(user net.Conn, sshConn *ssh.ServerConn, 
 					return
 				case <-ticker.C:
 					if time.Now().Unix()-atomic.LoadInt64(&lastActivityTime) >= int64(timeout.Seconds()) {
-						log.Printf("[%s] Connection timeout after %d seconds of inactivity", connInfo.ID, timeout.Seconds())
+						log.Printf("[%s] Connection timeout after %.0f seconds of inactivity", connInfo.ID, timeout.Seconds())
 						cancel()
 						ch.Close()
 						user.Close()
@@ -529,8 +555,7 @@ func (s *Server) handleClientConnection(user net.Conn, sshConn *ssh.ServerConn, 
 
 	wg.Wait()
 
-	tunnel.ActiveConns--
-	log.Printf("[%s] Connection closed, active conns: %d", connInfo.ID, tunnel.ActiveConns)
+	//log.Printf("[%s] Connection closed", connInfo.ID)
 }
 
 func copyBuffer(dst, src io.ReadWriter, buf []byte) {
