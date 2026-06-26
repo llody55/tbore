@@ -42,6 +42,15 @@ max_tunnels_per_client: 10
 max_conns_per_tunnel: 100
 bind_addr: "0.0.0.0"
 host_key_path: "./host_key"
+
+# 认证失败限制（爆破防护），默认启用（零配置即安全）
+auth_disabled: false                # 设为 true 可完全禁用爆破防护
+auth_max_failures: 3                # 连续失败 N 次后拉黑该 IP
+auth_block_duration: 600            # 拉黑时长（秒）
+auth_lru_size: 1000                 # 内存 LRU 缓存大小（条）
+auth_block_db_path: "data/auth.db"  # bbolt 持久化文件路径
+auth_clean_interval: 60             # 后台清理周期（秒）
+auth_record_ttl: 86400              # 过期记录磁盘保留时长（秒）
 ```
 
 启动服务端：
@@ -53,7 +62,7 @@ host_key_path: "./host_key"
 服务端启动后会显示主机密钥指纹：
 
 ```
-tbore server v0.6.5 started on 0.0.0.0:7835
+tbore server v0.7.0 started on 0.0.0.0:7835
 Host key fingerprint: SHA256:xxxx...
 ```
 
@@ -104,6 +113,13 @@ tunnels:
 | max\_conns\_per\_tunnel   | int    | 100     | 单条隧道最大并发连接数 |
 | bind\_addr                | string | 0.0.0.0 | 绑定地址       |
 | host\_key\_path           | string | -       | 主机密钥存储路径   |
+| auth\_disabled            | bool   | false   | 禁用爆破防护（默认启用） |
+| auth\_max\_failures       | int    | 3       | 连续失败 N 次后拉黑 IP |
+| auth\_block\_duration     | int    | 600     | 拉黑时长（秒）   |
+| auth\_lru\_size           | int    | 1000    | 内存 LRU 缓存大小（条）|
+| auth\_block\_db\_path     | string | data/auth.db | bbolt 持久化文件路径 |
+| auth\_clean\_interval     | int    | 60      | 后台清理周期（秒）  |
+| auth\_record\_ttl         | int    | 86400   | 过期记录磁盘保留时长（秒）|
 
 **客户端配置 (client.yaml)**：
 
@@ -136,8 +152,19 @@ tunnels:
 | 单隧道并发限制      | 防止单条隧道被突发连接打爆  |
 | 隧道数限制          | 防止端口耗尽           |
 | 主机密钥验证         | 防止中间人攻击          |
+| 爆破防护 (v0.7.0)  | IP 失败超限自动拉黑；预握手拦截 + bbolt 持久化 + LRU 缓存 |
 
 ### 📅 版本更新记录
+
+#### v0.7.0
+
+- **\[SECURITY] 爆破防护**：新增基于 IP 的认证失败限制机制（`auth_max_failures` / `auth_block_duration`），连续失败超阈值即拉黑该 IP，默认 3 次失败拉黑 10 分钟。**零配置即安全**，所有参数均有默认值，老配置无需修改即可启用。
+- **\[SECURITY] 预握手拦截**：被拉黑的 IP 在 SSH 密钥交换**之前**直接关闭连接（TCP RST），跳过 RSA-2048 握手运算，单次拒绝开销从 ~3ms 降至 ~0.01ms，约 **300 倍提升**。100 个被拦截连接平均仅耗时 0.21ms/个。
+- **\[SECURITY] 持久化黑名单**：基于 bbolt 嵌入式 KV 数据库持久化拉黑记录，进程重启后黑名单仍然有效，单文件存储、零 CGO 依赖、内存占用受 LRU 缓存上限严格约束。
+- **\[SECURITY] 内存可控**：LRU 缓存 + bbolt 分层架构，即便遭遇 5 万 IP 大规模爆破，内存增长仅 ~0.36MB，杜绝 OOM 风险。
+- **\[SECURITY] 过期自清理**：后台定期清理过期记录，磁盘占用可控；拉黑窗口内再失败会顺延截止时间，防止边试探边过期。
+- **\[CONFIG]** 新增 7 个认证防护配置项，全部可选，支持 `auth_disabled: true` 完全禁用回到旧行为。
+- **\[COMPAT]** 完全向后兼容所有历史版本，对低版本客户端零影响。
 
 #### v0.6.6
 

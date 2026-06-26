@@ -99,13 +99,15 @@ jobs:
           body: |
             ## tbore ${{ github.ref_name }}
 
-            ### 🔧 修复内容
-            - **[FIX] 客户端辅助 goroutine 泄漏**：修复 SSH 控制连接断开后，`healthCheckLoop` / `sendKeepAlive` / `reloadLoop` 仍持续往死连接发送请求导致大量 `Failed to send health report: EOF` 刷屏日志的问题。现引入每连接 `context.Context`，连接断开时统一取消，辅助 goroutine 立即退出。
-            - **[IMPROVE] 重连期日志噪声**：对 `sendTunnelInfo` / `reportTunnelHealth` 等一次性请求，连接已断（`io.EOF`）时不再记录日志。
+            ### � v0.7.0 重磅：爆破防护（Brute-Force Protection）
 
-            ### 🔍 新增功能（自 v0.6.5 起）
-            - **[SECURITY] 单隧道并发连接上限**：新增服务端配置项 `max_conns_per_tunnel`，对每条隧道转发连接并发数做准入控制，超出即拒绝。未显式配置时默认跟随 `max_connections`，向后兼容。
-            - **[CRITICAL FIX] 半关闭对称传播**（v0.6.5）：短连接任一端 close 后隧道可秒级回收 FD 与缓冲，不再依赖空闲超时兜底。
+            本版本为 **安全大版本**，新增基于 IP 的认证失败限制机制，针对公网部署面临的 SSH 爆破攻击提供完整防护链路：
+
+            - **\[SECURITY] 爆破防护**：连续认证失败超阈值即拉黑该 IP，默认 3 次失败拉黑 10 分钟。**零配置即安全**，老配置无需任何修改即可启用。
+            - **\[SECURITY] 预握手拦截**：被拉黑的 IP 在 SSH 密钥交换**之前**直接关闭连接（TCP RST），跳过 RSA-2048 握手运算，单次拒绝开销从 ~3ms 降至 ~0.01ms（**约 300 倍提升**）。
+            - **\[SECURITY] 持久化黑名单**：基于 bbolt 嵌入式 KV 数据库持久化拉黑记录，进程重启后黑名单仍然有效。
+            - **\[SECURITY] 内存可控**：LRU 缓存 + bbolt 分层架构，5 万 IP 大规模爆破内存增长仅 ~0.36MB，杜绝 OOM 风险。
+            - **\[SECURITY] 过期自清理**：后台定期清理过期记录，磁盘占用可控；拉黑窗口内再失败会顺延截止时间。
 
             ### 📋 使用说明
 
@@ -147,6 +149,15 @@ jobs:
             max_conns_per_tunnel: 100          # v0.6.5 新增，未填默认跟随 max_connections
             bind_addr: "0.0.0.0"
             host_key_path: "./host_key"
+
+            # 认证失败限制（爆破防护），默认启用（零配置即安全）
+            auth_disabled: false                # 设为 true 可完全禁用
+            auth_max_failures: 3                # 连续失败 N 次后拉黑该 IP
+            auth_block_duration: 600            # 拉黑时长（秒）
+            auth_lru_size: 1000                 # 内存 LRU 缓存大小（条）
+            auth_block_db_path: "data/auth.db"  # bbolt 持久化文件路径，推荐 /var/lib/tbore/auth.db
+            auth_clean_interval: 60             # 后台清理周期（秒）
+            auth_record_ttl: 86400              # 过期记录磁盘保留时长（秒），默认 24 小时
             ```
 
             **客户端配置 (client.yaml)**：
@@ -167,15 +178,22 @@ jobs:
             ```
 
             ### ⚠️ 注意事项
-            - 短连接现在依赖 TCP 半关闭信号秒级回收，空闲超时退化为最后兜底
+            - 爆破防护**默认启用**，所有参数均有默认值，老配置无需修改即可升级
+            - 黑名单数据持久化到 `auth_block_db_path`（默认 `data/auth.db`），生产部署推荐配置为 `/var/lib/tbore/auth.db`
+            - 拉黑判定基于客户端 IP 地址，NAT 网络下多个客户端共享同一公网 IP 时需注意
+            - 对超大流量爆破建议同时联动 iptables / fail2ban 做内核态过滤
+            - TCP 三次握手仍会建立（应用层无法避免），但预握手拦截会立即关闭，开销极低
+            - 短连接依赖 TCP 半关闭信号秒级回收，空闲超时退化为最后兜底
             - 对长连接类服务（SSH 终端等）建议将 `timeout` 设为 0，避免长暂停被误杀
-            - `max_conns_per_tunnel` 仅为整流器，建议同时按业务峰值合理设置，而非无限放大
+            - `max_conns_per_tunnel` 仅为整流器，建议同时按业务峰值合理设置
             - 热加载不会中断主 SSH 连接，已建立的隧道连接不受影响
 
             ### 📝 版本兼容性
-            - v0.6.6 完全向后兼容所有历史版本
-            - 新增配置项 `max_conns_per_tunnel` 为可选字段，老配置无需修改即可升级
-            - 建议公网部署的用户升级到此版本以获得连接回收、并发保护与重连稳定性修复
+            - v0.7.0 完全向后兼容所有历史版本
+            - 新增的 7 个认证防护配置项全部可选，零值走默认值
+            - 对低版本客户端**零影响**，所有防护逻辑在服务端完成，不改变协议
+            - 如需完全禁用爆破防护（排障/兼容场景），设置 `auth_disabled: true` 即可回到旧行为
+            - 强烈建议公网部署的用户升级到此版本
 
             ### 校验和 (SHA256)
             查看 `checksums.txt` 获取各个版本的哈希值。

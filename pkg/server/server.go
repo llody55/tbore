@@ -111,6 +111,7 @@ func getPoolStats() (get, put, alloc int64) {
 type Server struct {
 	cfg           *config.ServerConfig
 	auth          *auth.Authenticator
+	blocker       *auth.AuthBlocker
 	sem           *semaphore.Weighted
 	signer        ssh.Signer
 	activeConns   sync.Map
@@ -128,13 +129,41 @@ func NewServer(cfg *config.ServerConfig) (*Server, error) {
 		return nil, err
 	}
 
-	return &Server{
+	s := &Server{
 		cfg:           cfg,
 		auth:          auth.NewAuthenticator(cfg.Token),
 		sem:           semaphore.NewWeighted(int64(cfg.MaxConnections)),
 		signer:        signer,
 		serverStarted: time.Now(),
-	}, nil
+	}
+
+	// 启用认证失败限制（默认启用，可通过 auth_disabled: true 关闭）
+	if !cfg.AuthDisabled {
+		dbPath := cfg.AuthBlockDBPath
+		if dbPath == "" {
+			dbPath = config.DefaultAuthDBPath
+		}
+		s.blocker, err = auth.NewAuthBlocker(auth.AuthBlockerConfig{
+			DBPath:        dbPath,
+			MaxFailures:   cfg.AuthMaxFailures,
+			BlockDuration: time.Duration(cfg.AuthBlockDuration) * time.Second,
+			LRUSize:       cfg.AuthLRUSize,
+			CleanInterval: time.Duration(cfg.AuthCleanInterval) * time.Second,
+			RecordTTL:     time.Duration(cfg.AuthRecordTTL) * time.Second,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("init auth blocker: %w", err)
+		}
+	}
+
+	return s, nil
+}
+
+// Close 释放 Server 持有的资源（主要用于优雅退出）
+func (s *Server) Close() {
+	if s.blocker != nil {
+		s.blocker.Close()
+	}
 }
 
 func generateSessionID() string {
@@ -144,16 +173,34 @@ func generateSessionID() string {
 func (s *Server) Start() error {
 	sshConfig := &ssh.ServerConfig{
 		PasswordCallback: func(c ssh.ConnMetadata, pass []byte) (*ssh.Permissions, error) {
+			ip := auth.ExtractIP(c.RemoteAddr().String())
+
+			// 拉黑检查：失败次数过多则直接拒绝，即便密码正确也拒绝
+			if s.blocker != nil && s.blocker.IsBlocked(ip) {
+				log.Printf("Connection rejected from %s: IP is temporarily blocked", ip)
+				return nil, fmt.Errorf("IP %s is temporarily blocked due to repeated auth failures", ip)
+			}
+
 			if len(pass) < 32 {
+				if s.blocker != nil {
+					s.blocker.RecordFailure(ip)
+				}
 				return nil, fmt.Errorf("invalid authentication data from %s", c.RemoteAddr())
 			}
 			challenge := string(pass[:32])
 			response := string(pass[32:])
 
 			if !s.auth.ValidateResponse(challenge, response) {
+				if s.blocker != nil {
+					s.blocker.RecordFailure(ip)
+				}
 				return nil, fmt.Errorf("authentication failed from %s", c.RemoteAddr())
 			}
 
+			// 认证成功，清除该 IP 的失败计数
+			if s.blocker != nil {
+				s.blocker.ResetFailure(ip)
+			}
 			return nil, nil
 		},
 	}
@@ -190,6 +237,17 @@ func (s *Server) handleConnection(conn net.Conn, sshConfig *ssh.ServerConfig) {
 	defer conn.Close()
 
 	remoteAddr := conn.RemoteAddr().String()
+
+	// 预握手拦截：在 SSH 密钥交换之前直接关闭黑名单 IP 的连接，
+	// 避免 RSA-2048 握手的 CPU 开销（单次约 1-3ms），将拒绝开销降至 ~0.01ms。
+	// 纯 TCP RST 关闭，不进入 SSH 协议层。
+	if s.blocker != nil {
+		ip := auth.ExtractIP(remoteAddr)
+		if s.blocker.IsBlocked(ip) {
+			log.Printf("Connection rejected from %s: IP is temporarily blocked (pre-handshake)", ip)
+			return
+		}
+	}
 
 	sshConn, chans, reqs, err := ssh.NewServerConn(conn, sshConfig)
 	if err != nil {

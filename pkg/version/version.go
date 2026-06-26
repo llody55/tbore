@@ -1,5 +1,5 @@
 package version
 
-const Version = "0.6.6"
+const Version = "0.7.0"
 
-const BuildDate = "2026-06-23"
+const BuildDate = "2026-06-25"

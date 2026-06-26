@@ -8,4 +8,7 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 )
 
-require golang.org/x/sys v0.39.0 // indirect
+require (
+	go.etcd.io/bbolt v1.3.11 // indirect
+	golang.org/x/sys v0.39.0 // indirect
+)

@@ -6,3 +6,13 @@ max_connections: 100
 max_tunnels_per_client: 10
 bind_addr: "0.0.0.0"
 host_key_path: "./host_key"
+
+# 认证失败限制（爆破防护）
+# 默认启用（零配置即安全），以下为默认值，可按需调整或省略
+auth_disabled: false                # 设为 true 可完全禁用爆破防护
+auth_max_failures: 3                # 连续失败 N 次后拉黑该 IP
+auth_block_duration: 600            # 拉黑时长（秒）
+auth_lru_size: 1000                 # 内存 LRU 缓存大小（条）
+auth_block_db_path: "data/auth.db"  # bbolt 持久化文件路径，推荐 /var/lib/tbore/auth.db
+auth_clean_interval: 60             # 后台清理周期（秒）
+auth_record_ttl: 86400              # 过期记录磁盘保留时长（秒），默认 24 小时

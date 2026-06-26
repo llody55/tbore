@@ -16,6 +16,14 @@ const (
 	DefaultHealthCheckInterval = 30
 	// DefaultMaxConnsPerTunnel 为 0 表示跟随 MaxConnections，不单独限制
 	DefaultMaxConnsPerTunnel = 0
+
+	// 认证失败限制相关默认值
+	DefaultAuthMaxFailures   = 3              // 连续失败 N 次后拉黑
+	DefaultAuthBlockDuration = 600            // 拉黑时长（秒），10 分钟
+	DefaultAuthLRUSize       = 1000           // 内存 LRU 缓存大小（条）
+	DefaultAuthDBPath        = "data/auth.db" // 相对工作目录；推荐配置为 /var/lib/tbore/auth.db
+	DefaultAuthCleanInterval = 60             // 后台清理周期（秒）
+	DefaultAuthRecordTTL     = 86400          // 过期/历史记录磁盘保留时长（秒），24 小时
 )
 
 type TunnelConfig struct {
@@ -36,6 +44,18 @@ type ServerConfig struct {
 	BindAddr          string `yaml:"bind_addr"`
 	HostKeyPath       string `yaml:"host_key_path"`
 	MaxConnsPerTunnel int    `yaml:"max_conns_per_tunnel"`
+
+	// 认证失败限制（爆破防护）
+	// AuthDisabled 控制是否禁用认证失败限制。零值 false 表示启用（默认安全），
+	// 显式设为 true 时完全禁用，回到旧行为（不做失败计数/拉黑）。仅排障/兼容场景用。
+	// 采用 "disabled" 而非 "enabled" 是为了规避 Go bool 零值陷阱，实现零配置即安全。
+	AuthDisabled      bool   `yaml:"auth_disabled"`
+	AuthMaxFailures   int    `yaml:"auth_max_failures"`   // 连续失败 N 次后拉黑，默认 3
+	AuthBlockDuration int    `yaml:"auth_block_duration"` // 拉黑时长（秒），默认 600
+	AuthLRUSize       int    `yaml:"auth_lru_size"`       // 内存 LRU 缓存大小，默认 1000
+	AuthBlockDBPath   string `yaml:"auth_block_db_path"`  // bbolt 文件路径，留空走默认
+	AuthCleanInterval int    `yaml:"auth_clean_interval"` // 后台清理周期（秒），默认 60
+	AuthRecordTTL     int    `yaml:"auth_record_ttl"`     // 过期记录磁盘保留时长（秒），默认 86400
 }
 
 type ClientConfig struct {
@@ -110,6 +130,25 @@ func (cfg *ServerConfig) setDefaults() {
 	if cfg.BindAddr == "" {
 		cfg.BindAddr = "0.0.0.0"
 	}
+
+	// 认证失败限制默认值（AuthDisabled 零值 false 表示启用，无需特殊处理）
+	if cfg.AuthMaxFailures == 0 {
+		cfg.AuthMaxFailures = DefaultAuthMaxFailures
+	}
+	if cfg.AuthBlockDuration == 0 {
+		cfg.AuthBlockDuration = DefaultAuthBlockDuration
+	}
+	if cfg.AuthLRUSize == 0 {
+		cfg.AuthLRUSize = DefaultAuthLRUSize
+	}
+	if cfg.AuthCleanInterval == 0 {
+		cfg.AuthCleanInterval = DefaultAuthCleanInterval
+	}
+	if cfg.AuthRecordTTL == 0 {
+		cfg.AuthRecordTTL = DefaultAuthRecordTTL
+	}
+	// DBPath 为空时不在此处填默认：交由 server 端在启用时填入默认路径，
+	// 以保证"零配置即安全"，同时允许用户通过 AuthDisabled 显式关闭。
 }
 
 func (cfg *ServerConfig) Validate() error {
@@ -124,6 +163,25 @@ func (cfg *ServerConfig) Validate() error {
 	}
 	if cfg.MaxTunnels <= 0 {
 		return ErrInvalidMaxTunnels
+	}
+
+	// 认证失败限制参数校验（仅在启用时校验，禁用时不强制）
+	if !cfg.AuthDisabled {
+		if cfg.AuthMaxFailures <= 0 {
+			return ErrInvalidAuthMaxFailures
+		}
+		if cfg.AuthBlockDuration <= 0 {
+			return ErrInvalidAuthBlockDuration
+		}
+		if cfg.AuthLRUSize <= 0 {
+			return ErrInvalidAuthLRUSize
+		}
+		if cfg.AuthCleanInterval <= 0 {
+			return ErrInvalidAuthCleanInterval
+		}
+		if cfg.AuthRecordTTL <= 0 {
+			return ErrInvalidAuthRecordTTL
+		}
 	}
 	return nil
 }
